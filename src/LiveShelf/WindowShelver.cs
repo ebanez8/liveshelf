@@ -27,6 +27,8 @@ internal sealed class WindowShelver
 
     public event EventHandler? ThumbnailRefreshRequested;
 
+    public event EventHandler<ShelvedWindow>? AttentionRequested;
+
     public void ShelfForegroundWindow()
     {
         var sourceHwnd = NativeMethods.GetForegroundWindow();
@@ -245,14 +247,24 @@ internal sealed class WindowShelver
         {
             if (!NativeMethods.IsWindow(item.SourceHwnd))
             {
-                item.IsSourceAlive = false;
+                if (item.IsSourceAlive)
+                {
+                    item.IsSourceAlive = false;
+                    AttentionRequested?.Invoke(this, item);
+                }
+
                 UnregisterThumbnail(item);
                 continue;
             }
 
             item.IsSourceAlive = true;
             var title = NativeMethods.GetWindowTitle(item.SourceHwnd);
-            item.Title = string.IsNullOrWhiteSpace(title) ? item.ProcessName : title;
+            var nextTitle = string.IsNullOrWhiteSpace(title) ? item.ProcessName : title;
+            if (!string.Equals(item.Title, nextTitle, StringComparison.Ordinal))
+            {
+                item.Title = nextTitle;
+                AttentionRequested?.Invoke(this, item);
+            }
         }
     }
 

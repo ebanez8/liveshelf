@@ -79,7 +79,11 @@
                                     Unloaded="Card_Unloaded"
                                     MouseLeftButtonUp="Card_MouseLeftButtonUp"
                                     MouseEnter="Card_MouseEnter"
-                                    MouseLeave="Card_MouseLeave">
+                                    MouseLeave="Card_MouseLeave"
+                                    MouseWheel="Card_MouseWheel"
+                                    IsManipulationEnabled="True"
+                                    ManipulationStarting="Card_ManipulationStarting"
+                                    ManipulationDelta="Card_ManipulationDelta">
                                 <Border.ContextMenu>
                                     <ContextMenu>
                                         <MenuItem Header="Restore"

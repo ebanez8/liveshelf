@@ -22,13 +22,22 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const int ToggleShelfHotkeyVirtualKey = 0x48; // H
 
     private const double ShelfWidth = 264;
-    private const double PeekShelfWidth = 420;
-    private const double HiddenOffset = 10;
+    private const double PeekShelfWidth = 440;
+    private const double ZoomShelfWidth = 620;
+    private const double HiddenOffset = 18;
     private const double CollapsedPreviewHeight = 108;
-    private const double PeekPreviewHeight = 236;
-    private const int FastAnimationMs = 150;
-    private const int ShelfAnimationMs = 230;
-    private const int PeekAnimationMs = 210;
+    private const double PeekPreviewHeight = 248;
+    private const double ZoomPreviewHeight = 390;
+    private const int CardEntryAnimationMs = 340;
+    private const int ShelfAnimationMs = 560;
+    private const int PeekAnimationMs = 500;
+    private const int ZoomAnimationMs = 520;
+    private const int AttentionAnimationMs = 720;
+
+    private static readonly Color CardBackgroundColor = Color.FromRgb(32, 37, 45);
+    private static readonly Color CardBorderColor = Color.FromRgb(52, 60, 72);
+    private static readonly Color AttentionBorderColor = Color.FromRgb(117, 196, 255);
+    private static readonly Color AttentionBackgroundColor = Color.FromRgb(38, 49, 61);
 
     private readonly ObservableCollection<ShelvedWindow> _items = [];
     private readonly Dictionary<ShelvedWindow, FrameworkElement> _cardElements = [];
@@ -38,6 +47,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private IntPtr _windowHandle;
     private WindowShelver? _shelver;
     private ShelvedWindow? _peekedItem;
+    private ShelvedWindow? _zoomedItem;
     private bool _thumbnailRefreshQueued;
     private bool _isThumbnailAnimationRefreshAttached;
     private bool _isShelfHidden;
@@ -53,7 +63,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         _peekCollapseTimer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(140)
+            Interval = TimeSpan.FromMilliseconds(260)
         };
         _peekCollapseTimer.Tick += PeekCollapseTimer_Tick;
     }
@@ -92,6 +102,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _shelver = new WindowShelver(_windowHandle, _items);
         _shelver.StatusChanged += (_, message) => StatusMessage = message;
         _shelver.ThumbnailRefreshRequested += (_, _) => QueueThumbnailRefresh();
+        _shelver.AttentionRequested += (_, item) => Dispatcher.InvokeAsync(() => RunAttentionAlert(item));
 
         RegisterHotkeys();
         PositionShelfWindow(animate: false);
@@ -235,6 +246,42 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private void Card_MouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if ((Keyboard.Modifiers & ModifierKeys.Control) == 0 ||
+            GetItemFromSender(sender) is not { } item ||
+            item != _peekedItem)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        ActivateZoom(item);
+    }
+
+    private void Card_ManipulationStarting(object sender, ManipulationStartingEventArgs e)
+    {
+        e.ManipulationContainer = RootSurface;
+        e.Handled = true;
+    }
+
+    private void Card_ManipulationDelta(object sender, ManipulationDeltaEventArgs e)
+    {
+        if (GetItemFromSender(sender) is not { } item || item != _peekedItem)
+        {
+            return;
+        }
+
+        var scaleDelta = (e.DeltaManipulation.Scale.X + e.DeltaManipulation.Scale.Y) / 2;
+        if (Math.Abs(scaleDelta - 1) < 0.015)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        ActivateZoom(item);
+    }
+
     private void RestoreMenuItem_Click(object sender, RoutedEventArgs e)
     {
         if (GetItemFromContextMenu(sender) is { } item)
@@ -271,8 +318,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         _cardElements[item] = card;
         SetCardInitialTransform(card);
-        AnimateDouble(card, UIElement.OpacityProperty, 1, FastAnimationMs);
-        AnimateCardTransform(card, scale: 1, offsetX: 0, FastAnimationMs);
+        if (card is Border border)
+        {
+            border.Background = new SolidColorBrush(CardBackgroundColor);
+            border.BorderBrush = new SolidColorBrush(CardBorderColor);
+        }
+
+        AnimateDouble(card, UIElement.OpacityProperty, 1, CardEntryAnimationMs);
+        AnimateCardTransform(card, scale: 1, offsetX: 0, CardEntryAnimationMs);
     }
 
     private void Card_Unloaded(object sender, RoutedEventArgs e)
@@ -330,7 +383,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         _isShelfHidden = hidden;
-        RootSurface.IsHitTestVisible = !hidden;
         StatusMessage = hidden ? "Shelf hidden" : "Shelf visible";
 
         if (!hidden)
@@ -364,7 +416,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _peekedItem = item;
         item.IsExpanded = true;
         Panel.SetZIndex(card, 10);
-        AnimateCardTransform(card, scale: 1.018, offsetX: -5, PeekAnimationMs);
+        AnimateCardTransform(card, scale: 1.012, offsetX: -4, PeekAnimationMs);
         AnimatePreviewHeight(item, PeekPreviewHeight, PeekAnimationMs);
 
         StatusMessage = $"Peeking {item.ProcessName}";
@@ -381,6 +433,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         var item = _peekedItem;
         _peekedItem = null;
+        _zoomedItem = null;
         CollapsePeekedCard(item);
         StatusMessage = "Ready";
         PositionShelfWindow();
@@ -396,10 +449,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         _peekCollapseTimer.Stop();
         _peekedItem = null;
+        if (_zoomedItem == item)
+        {
+            _zoomedItem = null;
+        }
     }
 
     private void CollapsePeekedCard(ShelvedWindow item)
     {
+        if (_zoomedItem == item)
+        {
+            _zoomedItem = null;
+        }
+
         item.IsExpanded = false;
 
         if (_cardElements.TryGetValue(item, out var card))
@@ -409,6 +471,75 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         AnimatePreviewHeight(item, CollapsedPreviewHeight, PeekAnimationMs);
+    }
+
+    private void ActivateZoom(ShelvedWindow item)
+    {
+        if (_isShelfHidden || item != _peekedItem || !item.IsSourceAlive)
+        {
+            return;
+        }
+
+        _zoomedItem = item;
+        AnimatePreviewHeight(item, ZoomPreviewHeight, ZoomAnimationMs);
+        if (_cardElements.TryGetValue(item, out var card))
+        {
+            AnimateCardTransform(card, scale: 1.018, offsetX: -6, ZoomAnimationMs);
+        }
+
+        StatusMessage = $"Zoomed {item.ProcessName}";
+        PositionShelfWindow();
+        QueueThumbnailRefresh();
+    }
+
+    private void RunAttentionAlert(ShelvedWindow item)
+    {
+        if (!_cardElements.TryGetValue(item, out var card) || card is not Border border || !ShouldShowShelf)
+        {
+            return;
+        }
+
+        var borderBrush = EnsureMutableBrush(border.BorderBrush, CardBorderColor);
+        var backgroundBrush = EnsureMutableBrush(border.Background, CardBackgroundColor);
+        border.BorderBrush = borderBrush;
+        border.Background = backgroundBrush;
+
+        AnimateColor(borderBrush, SolidColorBrush.ColorProperty, AttentionBorderColor, AttentionAnimationMs / 2, () =>
+        {
+            AnimateColor(borderBrush, SolidColorBrush.ColorProperty, CardBorderColor, AttentionAnimationMs);
+        });
+
+        AnimateColor(backgroundBrush, SolidColorBrush.ColorProperty, AttentionBackgroundColor, AttentionAnimationMs / 2, () =>
+        {
+            AnimateColor(backgroundBrush, SolidColorBrush.ColorProperty, CardBackgroundColor, AttentionAnimationMs);
+        });
+
+        if (item != _peekedItem)
+        {
+            AnimateCardTransform(card, scale: 1.006, offsetX: -3, AttentionAnimationMs / 2);
+            RunAfter(AttentionAnimationMs / 2, () =>
+            {
+                if (item != _peekedItem && _cardElements.TryGetValue(item, out var currentCard))
+                {
+                    AnimateCardTransform(currentCard, scale: 1, offsetX: 0, AttentionAnimationMs);
+                }
+            });
+        }
+    }
+
+    private void RunAfter(int delayMs, Action action)
+    {
+        var timer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(delayMs)
+        };
+
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            action();
+        };
+        timer.Start();
     }
 
     private void AnimatePreviewHeight(ShelvedWindow item, double height, int durationMs)
@@ -522,10 +653,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        var shouldShowShelf = ShouldShowShelf;
+        RootSurface.IsHitTestVisible = shouldShowShelf;
+
+        if (shouldShowShelf)
+        {
+            _shelver?.SetThumbnailsVisible(true);
+        }
+
         var targetWidth = GetTargetShelfWidth();
         var right = SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth;
-        var targetLeft = _isShelfHidden ? right + HiddenOffset : right - targetWidth;
-        var targetOpacity = _isShelfHidden ? 0 : 1;
+        var targetLeft = shouldShowShelf ? right - targetWidth : right + HiddenOffset;
+        var targetOpacity = shouldShowShelf ? 1 : 0;
         var generation = ++_shelfAnimationGeneration;
 
         BeginAnimation(Window.TopProperty, null);
@@ -542,7 +681,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Width = targetWidth;
             Opacity = targetOpacity;
 
-            if (_isShelfHidden)
+            if (!shouldShowShelf)
             {
                 _shelver?.SetThumbnailsVisible(false);
             }
@@ -554,7 +693,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         AnimateDouble(this, FrameworkElement.WidthProperty, targetWidth, ShelfAnimationMs);
         AnimateDouble(this, UIElement.OpacityProperty, targetOpacity, ShelfAnimationMs, () =>
         {
-            if (generation == _shelfAnimationGeneration && _isShelfHidden)
+            if (generation == _shelfAnimationGeneration && !ShouldShowShelf)
             {
                 _shelver?.SetThumbnailsVisible(false);
             }
@@ -562,8 +701,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         RefreshThumbnailsDuring(ShelfAnimationMs);
     }
 
+    private bool ShouldShowShelf => Items.Count > 0 && !_isShelfHidden;
+
     private double GetTargetShelfWidth()
     {
+        if (_zoomedItem is not null && !_isShelfHidden)
+        {
+            return ZoomShelfWidth;
+        }
+
         if (_peekedItem is not null && !_isShelfHidden)
         {
             return PeekShelfWidth;
@@ -656,7 +802,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             To = to,
             Duration = TimeSpan.FromMilliseconds(durationMs),
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut }
         };
 
         if (completed is not null)
@@ -674,6 +820,38 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             animatable.BeginAnimation(property, animation, HandoffBehavior.SnapshotAndReplace);
         }
+    }
+
+    private static void AnimateColor(
+        Animatable target,
+        DependencyProperty property,
+        Color to,
+        int durationMs,
+        Action? completed = null)
+    {
+        var animation = new ColorAnimation
+        {
+            To = to,
+            Duration = TimeSpan.FromMilliseconds(durationMs),
+            EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut }
+        };
+
+        if (completed is not null)
+        {
+            animation.Completed += (_, _) => completed();
+        }
+
+        target.BeginAnimation(property, animation, HandoffBehavior.SnapshotAndReplace);
+    }
+
+    private static SolidColorBrush EnsureMutableBrush(Brush brush, Color fallback)
+    {
+        if (brush is SolidColorBrush solid && !solid.IsFrozen)
+        {
+            return solid;
+        }
+
+        return new SolidColorBrush(fallback);
     }
 
     private static ShelvedWindow? GetItemFromSender(object sender)

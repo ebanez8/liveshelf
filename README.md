@@ -14,8 +14,11 @@ Press `Ctrl+Alt+S` while another normal desktop window is focused. The window is
 
 - Hotkey shelving with `Ctrl+Alt+S`.
 - Shelf hide/show with `Ctrl+Alt+H`.
+- The shelf stays hidden until at least one window is shelved.
 - DWM live thumbnail cards in a topmost right-edge shelf.
 - Animated hover peek that widens the shelf and enlarges the live preview.
+- Hover a card and pinch/`Ctrl` + mouse wheel to zoom the live preview larger.
+- Cards subtly pulse when a shelved window title changes or the source window closes.
 - Click to restore.
 - Right-click actions for restore, close source, and remove card.
 - On app exit, still-shelved windows are restored when their HWND still exists.
