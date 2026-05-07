@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows.Automation;
 
 namespace LiveShelf;
@@ -9,8 +10,10 @@ internal sealed record WindowContentSnapshot(string Text, int Hash);
 internal static class WindowContentProbe
 {
     private const int MaxNodes = 80;
-    private const int MaxTextLength = 12000;
+    private const int MaxTextLength = 20000;
     private const int SnapshotTailLength = 6000;
+    private static readonly Regex VolatileGlyphs = new("[\\u2588\\u258C\\u2590\\u2800-\\u28FF]", RegexOptions.Compiled);
+    private static readonly Regex RepeatedSpaces = new("[ \\t]+", RegexOptions.Compiled);
 
     public static WindowContentSnapshot? TryCapture(IntPtr hwnd)
     {
@@ -65,7 +68,8 @@ internal static class WindowContentProbe
                 text = text[^SnapshotTailLength..];
             }
 
-            return new WindowContentSnapshot(text, StringComparer.Ordinal.GetHashCode(text));
+            var stableText = NormalizeForHash(text);
+            return new WindowContentSnapshot(text, StringComparer.Ordinal.GetHashCode(stableText));
         }
         catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or COMException)
         {
@@ -103,7 +107,12 @@ internal static class WindowContentProbe
         }
 
         var remaining = Math.Max(256, MaxTextLength - builder.Length);
-        var text = textPattern.DocumentRange.GetText(remaining);
+        var text = textPattern.DocumentRange.GetText(-1);
+        if (text.Length > remaining)
+        {
+            text = text[^remaining..];
+        }
+
         return TryAppend(text, builder, seen);
     }
 
@@ -140,5 +149,17 @@ internal static class WindowContentProbe
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n')
             .Trim();
+    }
+
+    private static string NormalizeForHash(string value)
+    {
+        var text = VolatileGlyphs.Replace(value, string.Empty);
+        var lines = text
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n')
+            .Select(line => RepeatedSpaces.Replace(line, " ").TrimEnd());
+
+        return string.Join('\n', lines).Trim();
     }
 }

@@ -7,6 +7,7 @@ internal sealed class WindowShelver
 {
     private static readonly TimeSpan InitialFocusSuppression = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ContentProbeInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan AgentStableDoneDelay = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan StableDoneDelay = TimeSpan.FromSeconds(9);
 
     private readonly IntPtr _shelfHwnd;
@@ -67,6 +68,7 @@ internal sealed class WindowShelver
 
         var item = new ShelvedWindow(sourceHwnd, thumbnailHandle, placement, title, processName);
         item.SuppressFocusAlertsUntilUtc = DateTime.UtcNow.Add(InitialFocusSuppression);
+        item.IsAgentLikeSession = LooksLikeAgentSession(processName, title);
 
         try
         {
@@ -384,6 +386,7 @@ internal sealed class WindowShelver
                 item.LastObservedChangeUtc = now;
                 item.HasDetectedChange = true;
                 item.HasReportedStable = false;
+                item.IsAgentLikeSession |= LooksLikeAgentSession(item.ProcessName, item.Title);
                 SetBadgeAndAlert(item, GetTitleChangeBadge(item));
             }
 
@@ -409,16 +412,28 @@ internal sealed class WindowShelver
         }
 
         var text = snapshot.Text;
+        item.IsAgentLikeSession |= LooksLikeAgentSession(item.ProcessName, item.Title, text);
+
         var looksBusy = LooksBusy(text);
         if (looksBusy)
         {
             item.HasObservedBusySignal = true;
+            item.HasDetectedChange = true;
+            item.HasReportedStable = false;
+            item.LastObservedChangeUtc = now;
         }
 
         if (!item.HasContentSnapshot)
         {
             item.HasContentSnapshot = true;
             item.LastContentHash = snapshot.Hash;
+            if (item.IsAgentLikeSession && !looksBusy)
+            {
+                item.HasDetectedChange = true;
+                item.HasReportedStable = false;
+                item.LastObservedChangeUtc = now;
+            }
+
             return;
         }
 
@@ -438,9 +453,10 @@ internal sealed class WindowShelver
             return;
         }
 
+        var doneDelay = item.IsAgentLikeSession ? AgentStableDoneDelay : StableDoneDelay;
         if (!item.HasDetectedChange ||
             item.HasReportedStable ||
-            now - item.LastObservedChangeUtc < StableDoneDelay ||
+            now - item.LastObservedChangeUtc < doneDelay ||
             !ShouldTreatStableContentAsDone(item, text))
         {
             return;
@@ -497,6 +513,11 @@ internal sealed class WindowShelver
             return ShelfBadgeKind.None;
         }
 
+        if (item.IsAgentLikeSession && LooksPromptReady(text))
+        {
+            return ShelfBadgeKind.Done;
+        }
+
         return IsBrowserProcess(item.ProcessName)
             ? ShelfBadgeKind.Updated
             : ShelfBadgeKind.Changed;
@@ -504,13 +525,15 @@ internal sealed class WindowShelver
 
     private static bool ShouldTreatStableContentAsDone(ShelvedWindow item, string text)
     {
-        if (LooksLikeNeedsAttention(Tail(text, 1800)) || LooksBusy(text))
+        var recentText = Tail(text, 1800);
+        if (LooksLikeNeedsAttention(recentText) || LooksBusy(text))
         {
             return false;
         }
 
-        var isTerminalOrAgent = IsLikelyTerminalOrAgentWindow(item.ProcessName, text);
+        var isTerminalOrAgent = item.IsAgentLikeSession || IsTerminalProcess(item.ProcessName);
         return LooksDone(text) ||
+               (item.IsAgentLikeSession && item.HasDetectedChange) ||
                (isTerminalOrAgent && LooksPromptReady(text)) ||
                (isTerminalOrAgent && item.HasObservedBusySignal);
     }
@@ -542,18 +565,22 @@ internal sealed class WindowShelver
 
     private static bool LooksDone(string title)
     {
-        return title.Contains("done", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("complete", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("completed", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("finished", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("success", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("succeeded", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("build succeeded", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("tests passed", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("all tests pass", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("changes made", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("100%", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("0:00", StringComparison.OrdinalIgnoreCase);
+        var recent = Tail(title, 2400);
+        return recent.Contains("done", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("complete", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("completed", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("finished", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("success", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("succeeded", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("build succeeded", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("tests passed", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("all tests pass", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("changes made", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("no changes", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("nothing to do", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("task complete", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("100%", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("0:00", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool LooksLikeNeedsAttention(string title)
@@ -569,51 +596,81 @@ internal sealed class WindowShelver
 
     private static bool LooksBusy(string text)
     {
-        var tail = Tail(text, 1400);
-        var lastLine = GetLastNonEmptyLine(tail);
+        var tail = Tail(text, 1800);
+        var recentLines = GetRecentNonEmptyLines(tail, 8);
+        var recent = string.Join('\n', recentLines);
+        var lastLine = recentLines.LastOrDefault() ?? string.Empty;
 
-        return tail.Contains("esc to interrupt", StringComparison.OrdinalIgnoreCase) ||
-               tail.Contains("ctrl+c to interrupt", StringComparison.OrdinalIgnoreCase) ||
-               tail.Contains("press esc", StringComparison.OrdinalIgnoreCase) ||
-               tail.Contains("stop generating", StringComparison.OrdinalIgnoreCase) ||
-               tail.Contains("applying patch", StringComparison.OrdinalIgnoreCase) ||
+        return recent.Contains("esc to interrupt", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("ctrl+c to interrupt", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("ctrl-c to interrupt", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("press esc", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("stop generating", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("interrupt", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("applying patch", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("calling tool", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("running command", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("executing", StringComparison.OrdinalIgnoreCase) ||
+               recent.Contains("generating", StringComparison.OrdinalIgnoreCase) ||
                lastLine.Contains("thinking", StringComparison.OrdinalIgnoreCase) ||
                lastLine.Contains("working", StringComparison.OrdinalIgnoreCase) ||
                lastLine.Contains("running", StringComparison.OrdinalIgnoreCase) ||
                lastLine.Contains("editing", StringComparison.OrdinalIgnoreCase) ||
                lastLine.Contains("writing", StringComparison.OrdinalIgnoreCase) ||
                lastLine.Contains("reading", StringComparison.OrdinalIgnoreCase) ||
-               lastLine.Contains("searching", StringComparison.OrdinalIgnoreCase);
+               lastLine.Contains("searching", StringComparison.OrdinalIgnoreCase) ||
+               lastLine.Contains("waiting", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool LooksPromptReady(string text)
     {
-        var lastLine = GetLastNonEmptyLine(text).Trim();
-        if (lastLine.Length is < 1 or > 180)
+        foreach (var line in GetRecentNonEmptyLines(text, 5).Reverse())
+        {
+            if (LooksPromptReadyLine(line))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool LooksPromptReadyLine(string line)
+    {
+        var trimmed = line.Trim();
+        if (trimmed.Length is < 1 or > 180)
         {
             return false;
         }
 
-        return lastLine.StartsWith("PS ", StringComparison.OrdinalIgnoreCase) ||
-               lastLine.StartsWith("C:\\", StringComparison.OrdinalIgnoreCase) ||
-               lastLine.StartsWith(">", StringComparison.Ordinal) ||
-               lastLine.EndsWith("$", StringComparison.Ordinal) ||
-               lastLine.EndsWith(">", StringComparison.Ordinal) ||
-               lastLine.EndsWith("❯", StringComparison.Ordinal) ||
-               lastLine.Contains("›", StringComparison.Ordinal) ||
-               lastLine.Contains("➜", StringComparison.Ordinal) ||
-               lastLine.Contains("λ", StringComparison.Ordinal);
+        return trimmed.StartsWith("PS ", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("C:\\", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith(">", StringComparison.Ordinal) ||
+               trimmed.EndsWith("$", StringComparison.Ordinal) ||
+               trimmed.EndsWith(">", StringComparison.Ordinal) ||
+               ContainsCodePoint(trimmed, 0x203A) ||
+               ContainsCodePoint(trimmed, 0x276F) ||
+               ContainsCodePoint(trimmed, 0x279C) ||
+               ContainsCodePoint(trimmed, 0x03BB) ||
+               ContainsCodePoint(trimmed, 0x258C);
     }
 
-    private static bool IsLikelyTerminalOrAgentWindow(string processName, string text)
+    private static bool LooksLikeAgentSession(string processName, string title, string text = "")
     {
-        return IsTerminalProcess(processName) ||
-               text.Contains("codex", StringComparison.OrdinalIgnoreCase) ||
+        return ContainsAgentName(processName) ||
+               ContainsAgentName(title) ||
+               ContainsAgentName(Tail(text, 4000));
+    }
+
+    private static bool ContainsAgentName(string text)
+    {
+        return text.Contains("codex", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("claude", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("claude code", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("opencode", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("aider", StringComparison.OrdinalIgnoreCase) ||
-               text.Contains("gemini cli", StringComparison.OrdinalIgnoreCase);
+               text.Contains("gemini cli", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("qwen code", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsTerminalProcess(string processName)
@@ -647,16 +704,32 @@ internal sealed class WindowShelver
 
     private static string GetLastNonEmptyLine(string text)
     {
+        return GetRecentNonEmptyLines(text, 1).LastOrDefault() ?? string.Empty;
+    }
+
+    private static IReadOnlyList<string> GetRecentNonEmptyLines(string text, int maxLines)
+    {
         var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        var result = new List<string>(maxLines);
         for (var i = lines.Length - 1; i >= 0; i--)
         {
             if (!string.IsNullOrWhiteSpace(lines[i]))
             {
-                return lines[i].Trim();
+                result.Add(lines[i].Trim());
+                if (result.Count >= maxLines)
+                {
+                    break;
+                }
             }
         }
 
-        return string.Empty;
+        result.Reverse();
+        return result;
+    }
+
+    private static bool ContainsCodePoint(string text, int codePoint)
+    {
+        return text.Contains(char.ConvertFromUtf32(codePoint), StringComparison.Ordinal);
     }
 
     private static bool IsMeaningfullyVisible(NativeMethods.RECT rect, NativeMethods.RECT virtualScreen)
