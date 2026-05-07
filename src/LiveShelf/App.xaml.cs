@@ -39,4 +39,14 @@ public partial class App : Application
         CrashLogger.Log(e.Exception);
         e.SetObserved();
     }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        if (MainWindow is MainWindow window)
+        {
+            window.RestoreShelvedWindowsForShutdown();
+        }
+
+        base.OnExit(e);
+    }
 }

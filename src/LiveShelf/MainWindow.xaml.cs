@@ -51,6 +51,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _thumbnailRefreshQueued;
     private bool _isThumbnailAnimationRefreshAttached;
     private bool _isShelfHidden;
+    private bool _hasRestoredShelvedWindowsForShutdown;
     private DateTime _thumbnailAnimationRefreshUntilUtc;
     private int _shelfAnimationGeneration;
     private string _statusMessage = "Ready";
@@ -122,6 +123,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         NativeMethods.UnregisterHotKey(_windowHandle, ShelfHotkeyId);
         NativeMethods.UnregisterHotKey(_windowHandle, ToggleShelfHotkeyId);
         _source?.RemoveHook(WndProc);
+        RestoreShelvedWindowsForShutdown();
+    }
+
+    internal void RestoreShelvedWindowsForShutdown()
+    {
+        if (_hasRestoredShelvedWindowsForShutdown)
+        {
+            return;
+        }
+
+        _hasRestoredShelvedWindowsForShutdown = true;
         _shelver?.RestoreAll();
     }
 

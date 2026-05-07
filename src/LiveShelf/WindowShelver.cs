@@ -12,13 +12,17 @@ internal sealed class WindowShelver
     private readonly IntPtr _shelfHwnd;
     private readonly ObservableCollection<ShelvedWindow> _items;
     private readonly DispatcherTimer _monitorTimer;
+    private readonly Dispatcher _dispatcher;
+    private readonly ShelfEventBridge _eventBridge;
     private IntPtr _lastForegroundWindow;
     private bool _thumbnailsVisible = true;
+    private bool _isRestoringAll;
 
     public WindowShelver(IntPtr shelfHwnd, ObservableCollection<ShelvedWindow> items)
     {
         _shelfHwnd = shelfHwnd;
         _items = items;
+        _dispatcher = Dispatcher.CurrentDispatcher;
 
         _monitorTimer = new DispatcherTimer
         {
@@ -26,6 +30,9 @@ internal sealed class WindowShelver
         };
         _monitorTimer.Tick += MonitorTimer_Tick;
         _monitorTimer.Start();
+
+        _eventBridge = new ShelfEventBridge();
+        _eventBridge.EventReceived += EventBridge_EventReceived;
     }
 
     public event EventHandler<string>? StatusChanged;
@@ -61,11 +68,12 @@ internal sealed class WindowShelver
 
         var title = NativeMethods.GetWindowTitle(sourceHwnd);
         var processName = NativeMethods.GetProcessName(sourceHwnd);
+        var processId = NativeMethods.GetProcessId(sourceHwnd);
 
         var registerResult = NativeMethods.DwmRegisterThumbnail(_shelfHwnd, sourceHwnd, out var thumbnailHandle);
         NativeMethods.ThrowForHResult("DwmRegisterThumbnail", registerResult);
 
-        var item = new ShelvedWindow(sourceHwnd, thumbnailHandle, placement, title, processName);
+        var item = new ShelvedWindow(sourceHwnd, thumbnailHandle, placement, title, processName, processId);
         item.SuppressFocusAlertsUntilUtc = DateTime.UtcNow.Add(InitialFocusSuppression);
 
         try
@@ -92,15 +100,7 @@ internal sealed class WindowShelver
         EndInteractiveZoom(item);
         UnregisterThumbnail(item);
 
-        if (NativeMethods.IsWindow(item.SourceHwnd))
-        {
-            var placement = item.OriginalPlacement;
-            placement.Length = NativeMethods.WINDOWPLACEMENT.Create().Length;
-
-            NativeMethods.SetWindowPlacement(item.SourceHwnd, ref placement);
-            NativeMethods.ShowWindow(item.SourceHwnd, NativeMethods.SW_RESTORE);
-            NativeMethods.SetForegroundWindow(item.SourceHwnd);
-        }
+        RestoreSourceWindow(item, activate: true);
 
         _items.Remove(item);
         StatusChanged?.Invoke(this, "Ready");
@@ -118,10 +118,7 @@ internal sealed class WindowShelver
 
         if (restoreIfAlive && NativeMethods.IsWindow(item.SourceHwnd))
         {
-            var placement = item.OriginalPlacement;
-            placement.Length = NativeMethods.WINDOWPLACEMENT.Create().Length;
-            NativeMethods.SetWindowPlacement(item.SourceHwnd, ref placement);
-            NativeMethods.ShowWindow(item.SourceHwnd, NativeMethods.SW_RESTORE);
+            RestoreSourceWindow(item, activate: false);
         }
 
         _items.Remove(item);
@@ -149,12 +146,21 @@ internal sealed class WindowShelver
 
     public void RestoreAll()
     {
+        if (_isRestoringAll)
+        {
+            return;
+        }
+
+        _isRestoringAll = true;
         _monitorTimer.Stop();
+        _eventBridge.Dispose();
 
         foreach (var item in _items.ToArray())
         {
-            Restore(item);
+            RestoreForShutdown(item);
         }
+
+        StatusChanged?.Invoke(this, "Ready");
     }
 
     public void SetThumbnailsVisible(bool visible)
@@ -339,6 +345,52 @@ internal sealed class WindowShelver
         }
     }
 
+    private void RestoreForShutdown(ShelvedWindow item)
+    {
+        try
+        {
+            EndInteractiveZoom(item);
+            UnregisterThumbnail(item);
+            RestoreSourceWindow(item, activate: false);
+        }
+        finally
+        {
+            _items.Remove(item);
+        }
+    }
+
+    private static void RestoreSourceWindow(ShelvedWindow item, bool activate)
+    {
+        if (!NativeMethods.IsWindow(item.SourceHwnd))
+        {
+            return;
+        }
+
+        var placement = item.OriginalPlacement;
+        placement.Length = NativeMethods.WINDOWPLACEMENT.Create().Length;
+
+        var placementApplied = NativeMethods.SetWindowPlacement(item.SourceHwnd, ref placement);
+        NativeMethods.ShowWindow(
+            item.SourceHwnd,
+            placementApplied ? GetRestoreShowCommand(placement.ShowCmd) : NativeMethods.SW_RESTORE);
+
+        if (activate)
+        {
+            NativeMethods.SetForegroundWindow(item.SourceHwnd);
+        }
+    }
+
+    private static int GetRestoreShowCommand(int originalShowCommand)
+    {
+        return originalShowCommand switch
+        {
+            NativeMethods.SW_SHOWMAXIMIZED => NativeMethods.SW_SHOWMAXIMIZED,
+            NativeMethods.SW_SHOWMINIMIZED or NativeMethods.SW_MINIMIZE or NativeMethods.SW_SHOWMINNOACTIVE => NativeMethods.SW_RESTORE,
+            NativeMethods.SW_SHOWNORMAL or NativeMethods.SW_SHOW or NativeMethods.SW_SHOWNA or NativeMethods.SW_SHOWNOACTIVATE => originalShowCommand,
+            _ => NativeMethods.SW_RESTORE
+        };
+    }
+
     private void MonitorTimer_Tick(object? sender, EventArgs e)
     {
         var foregroundWindow = NativeMethods.GetForegroundWindow();
@@ -393,6 +445,103 @@ internal sealed class WindowShelver
         _lastForegroundWindow = foregroundWindow;
     }
 
+    private void EventBridge_EventReceived(object? sender, ShelfBridgeEvent bridgeEvent)
+    {
+        _dispatcher.InvokeAsync(() => ApplyBridgeEvent(bridgeEvent));
+    }
+
+    private void ApplyBridgeEvent(ShelfBridgeEvent bridgeEvent)
+    {
+        var item = FindBridgeTarget(bridgeEvent);
+        if (item is null)
+        {
+            return;
+        }
+
+        var badge = GetBridgeBadge(bridgeEvent);
+        if (badge is ShelfBadgeKind.None)
+        {
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        item.LastObservedChangeUtc = now;
+        item.HasDetectedChange = true;
+
+        if (IsRunningBadge(badge))
+        {
+            item.HasObservedBusySignal = true;
+            item.HasReportedStable = false;
+        }
+
+        if (IsFinalBadge(badge))
+        {
+            item.HasReportedStable = true;
+        }
+
+        SetBadgeAndAlert(item, badge, force: true, BuildBridgeDetail(bridgeEvent));
+    }
+
+    private ShelvedWindow? FindBridgeTarget(ShelfBridgeEvent bridgeEvent)
+    {
+        if (bridgeEvent.Hwnd is > 0)
+        {
+            var hwnd = new IntPtr(bridgeEvent.Hwnd.Value);
+            var byHwnd = _items.FirstOrDefault(item => item.SourceHwnd == hwnd);
+            if (byHwnd is not null)
+            {
+                return byHwnd;
+            }
+        }
+
+        if (bridgeEvent.EffectiveProcessId > 0)
+        {
+            var byProcessId = _items.FirstOrDefault(item => item.SourceProcessId == bridgeEvent.EffectiveProcessId);
+            if (byProcessId is not null)
+            {
+                return byProcessId;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(bridgeEvent.ProcessName))
+        {
+            var byProcessName = _items
+                .Where(item => item.ProcessName.Contains(bridgeEvent.ProcessName, StringComparison.OrdinalIgnoreCase) ||
+                               bridgeEvent.ProcessName.Contains(item.ProcessName, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(item => item.LastObservedChangeUtc)
+                .FirstOrDefault();
+
+            if (byProcessName is not null)
+            {
+                return byProcessName;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(bridgeEvent.EffectiveTitle))
+        {
+            var byTitle = _items
+                .Where(item => item.Title.Contains(bridgeEvent.EffectiveTitle, StringComparison.OrdinalIgnoreCase) ||
+                               bridgeEvent.EffectiveTitle.Contains(item.Title, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(item => item.LastObservedChangeUtc)
+                .FirstOrDefault();
+
+            if (byTitle is not null)
+            {
+                return byTitle;
+            }
+        }
+
+        if (IsAgentBridgeEvent(bridgeEvent))
+        {
+            return _items
+                .Where(item => IsLikelyTerminalOrAgentWindow(item.ProcessName, item.Title))
+                .OrderByDescending(item => item.LastObservedChangeUtc)
+                .FirstOrDefault();
+        }
+
+        return null;
+    }
+
     private void ObserveWindowContent(ShelvedWindow item, DateTime now)
     {
         if (now - item.LastStateProbeUtc < ContentProbeInterval)
@@ -440,79 +589,292 @@ internal sealed class WindowShelver
 
         if (!item.HasDetectedChange ||
             item.HasReportedStable ||
-            now - item.LastObservedChangeUtc < StableDoneDelay ||
-            !ShouldTreatStableContentAsDone(item, text))
+            now - item.LastObservedChangeUtc < StableDoneDelay)
+        {
+            return;
+        }
+
+        var stableBadge = GetStableContentBadge(item, text);
+        if (stableBadge is ShelfBadgeKind.None)
         {
             return;
         }
 
         item.HasReportedStable = true;
-        SetBadgeAndAlert(item, ShelfBadgeKind.Done);
+        SetBadgeAndAlert(item, stableBadge);
     }
 
-    private void SetBadgeAndAlert(ShelvedWindow item, ShelfBadgeKind badgeKind)
+    private void SetBadgeAndAlert(
+        ShelvedWindow item,
+        ShelfBadgeKind badgeKind,
+        bool force = false,
+        string detail = "")
     {
-        if (item.BadgeKind == badgeKind || !ShouldReplaceBadge(item.BadgeKind, badgeKind))
+        if (item.BadgeKind == badgeKind && string.IsNullOrWhiteSpace(detail))
         {
             return;
         }
 
-        item.SetBadge(badgeKind);
+        if (item.BadgeKind != badgeKind && !force && !ShouldReplaceBadge(item.BadgeKind, badgeKind))
+        {
+            return;
+        }
+
+        item.SetBadge(badgeKind, detail);
         AttentionRequested?.Invoke(this, item);
     }
 
     private static ShelfBadgeKind GetTitleChangeBadge(ShelvedWindow item)
     {
-        if (LooksLikeNeedsAttention(item.Title))
+        if (IsLikelyTerminalOrAgentWindow(item.ProcessName, item.Title))
         {
-            return ShelfBadgeKind.NeedsAttention;
+            return GetAgentTextBadge(item.Title);
         }
 
-        if (LooksDone(item.Title))
-        {
-            return ShelfBadgeKind.Done;
-        }
-
-        var processName = item.ProcessName;
-        return IsBrowserProcess(processName)
-            ? ShelfBadgeKind.Updated
-            : ShelfBadgeKind.Changed;
+        return GetSmartTextBadge(item.ProcessName, item.Title);
     }
 
     private static ShelfBadgeKind GetContentChangeBadge(ShelvedWindow item, string text)
     {
         var recentText = Tail(text, 1800);
-        if (LooksLikeNeedsAttention(recentText))
+
+        if (IsLikelyTerminalOrAgentWindow(item.ProcessName, text))
         {
-            return ShelfBadgeKind.NeedsAttention;
+            return GetAgentTextBadge(recentText);
         }
 
-        if (LooksDone(recentText))
+        return GetSmartTextBadge(item.ProcessName, recentText);
+    }
+
+    private static ShelfBadgeKind GetStableContentBadge(ShelvedWindow item, string text)
+    {
+        var recentText = Tail(text, 1800);
+        var isAgent = IsLikelyTerminalOrAgentWindow(item.ProcessName, text);
+
+        if (isAgent)
         {
-            return ShelfBadgeKind.Done;
+            if (LooksLikeApproval(recentText))
+            {
+                return ShelfBadgeKind.WaitingForApproval;
+            }
+
+            if (LooksFailure(recentText))
+            {
+                return ShelfBadgeKind.Failed;
+            }
+
+            return !LooksBusy(text) && (LooksDone(text) || LooksPromptReady(text) || item.HasObservedBusySignal)
+                ? ShelfBadgeKind.DoneNeedsReview
+                : ShelfBadgeKind.None;
+        }
+
+        if (LooksError(recentText))
+        {
+            return ShelfBadgeKind.Error;
+        }
+
+        if (LooksUploadComplete(recentText))
+        {
+            return ShelfBadgeKind.UploadComplete;
+        }
+
+        return LooksDone(recentText) ? ShelfBadgeKind.Done : ShelfBadgeKind.None;
+    }
+
+    private static ShelfBadgeKind GetBridgeBadge(ShelfBridgeEvent bridgeEvent)
+    {
+        var isAgentEvent = IsAgentBridgeEvent(bridgeEvent);
+        var explicitStatus = MapStatusToken(bridgeEvent.Status);
+        if (explicitStatus is not ShelfBadgeKind.None)
+        {
+            return isAgentEvent && explicitStatus is ShelfBadgeKind.Done
+                ? ShelfBadgeKind.DoneNeedsReview
+                : explicitStatus;
+        }
+
+        var eventName = NormalizeToken(bridgeEvent.EventName);
+        var tool = NormalizeToken(bridgeEvent.Tool);
+        var text = $"{bridgeEvent.EventName} {bridgeEvent.Tool} {bridgeEvent.Message} {bridgeEvent.Details}";
+
+        if (isAgentEvent)
+        {
+            if (eventName.Contains("permissionrequest", StringComparison.Ordinal) || LooksLikeApproval(text))
+            {
+                return ShelfBadgeKind.WaitingForApproval;
+            }
+
+            if (eventName.Contains("stopfailure", StringComparison.Ordinal) ||
+                bridgeEvent.Success == false ||
+                LooksFailure(text))
+            {
+                return ShelfBadgeKind.Failed;
+            }
+
+            if (eventName == "stop")
+            {
+                return ShelfBadgeKind.DoneNeedsReview;
+            }
+
+            if (eventName.Contains("pretooluse", StringComparison.Ordinal))
+            {
+                if (IsFileEditingTool(tool, text))
+                {
+                    return ShelfBadgeKind.EditingFiles;
+                }
+
+                if (IsCommandTool(tool, text))
+                {
+                    return ShelfBadgeKind.RunningCommand;
+                }
+
+                return ShelfBadgeKind.Running;
+            }
+
+            if (eventName.Contains("userpromptsubmit", StringComparison.Ordinal) ||
+                eventName.Contains("posttooluse", StringComparison.Ordinal))
+            {
+                return ShelfBadgeKind.Running;
+            }
+
+            if (eventName.Contains("notification", StringComparison.Ordinal))
+            {
+                return LooksLikeApproval(text) ? ShelfBadgeKind.WaitingForApproval : ShelfBadgeKind.NeedsAttention;
+            }
+        }
+
+        var smartEventStatus = MapStatusToken(bridgeEvent.EventName);
+        if (smartEventStatus is not ShelfBadgeKind.None)
+        {
+            return smartEventStatus;
+        }
+
+        if (LooksError(text))
+        {
+            return ShelfBadgeKind.Error;
+        }
+
+        if (LooksLikeNeedsInput(text))
+        {
+            return ShelfBadgeKind.NeedsInput;
+        }
+
+        if (LooksUploadComplete(text))
+        {
+            return ShelfBadgeKind.UploadComplete;
+        }
+
+        if (LooksPlaying(text))
+        {
+            return ShelfBadgeKind.Playing;
+        }
+
+        if (LooksPaused(text))
+        {
+            return ShelfBadgeKind.Paused;
+        }
+
+        if (LooksLoading(text))
+        {
+            return ShelfBadgeKind.Loading;
+        }
+
+        return LooksDone(text) ? ShelfBadgeKind.Done : ShelfBadgeKind.Changed;
+    }
+
+    private static ShelfBadgeKind GetAgentTextBadge(string text)
+    {
+        if (LooksLikeApproval(text))
+        {
+            return ShelfBadgeKind.WaitingForApproval;
+        }
+
+        if (LooksFailure(text))
+        {
+            return ShelfBadgeKind.Failed;
+        }
+
+        if (LooksAgentEditing(text))
+        {
+            return ShelfBadgeKind.EditingFiles;
+        }
+
+        if (LooksAgentRunningCommand(text))
+        {
+            return ShelfBadgeKind.RunningCommand;
         }
 
         if (LooksBusy(text))
         {
-            return ShelfBadgeKind.None;
+            return ShelfBadgeKind.Running;
         }
 
-        return IsBrowserProcess(item.ProcessName)
+        return LooksDone(text) ? ShelfBadgeKind.DoneNeedsReview : ShelfBadgeKind.Changed;
+    }
+
+    private static ShelfBadgeKind GetSmartTextBadge(string processName, string text)
+    {
+        if (LooksError(text))
+        {
+            return ShelfBadgeKind.Error;
+        }
+
+        if (LooksLikeNeedsInput(text))
+        {
+            return ShelfBadgeKind.NeedsInput;
+        }
+
+        if (LooksUploadComplete(text))
+        {
+            return ShelfBadgeKind.UploadComplete;
+        }
+
+        if (LooksPlaying(text))
+        {
+            return ShelfBadgeKind.Playing;
+        }
+
+        if (LooksPaused(text))
+        {
+            return ShelfBadgeKind.Paused;
+        }
+
+        if (LooksLoading(text))
+        {
+            return ShelfBadgeKind.Loading;
+        }
+
+        if (LooksDone(text))
+        {
+            return ShelfBadgeKind.Done;
+        }
+
+        return IsBrowserProcess(processName)
             ? ShelfBadgeKind.Updated
             : ShelfBadgeKind.Changed;
     }
 
-    private static bool ShouldTreatStableContentAsDone(ShelvedWindow item, string text)
+    private static ShelfBadgeKind MapStatusToken(string status)
     {
-        if (LooksLikeNeedsAttention(Tail(text, 1800)) || LooksBusy(text))
+        return NormalizeToken(status) switch
         {
-            return false;
-        }
-
-        var isTerminalOrAgent = IsLikelyTerminalOrAgentWindow(item.ProcessName, text);
-        return LooksDone(text) ||
-               (isTerminalOrAgent && LooksPromptReady(text)) ||
-               (isTerminalOrAgent && item.HasObservedBusySignal);
+            "loading" or "pageloading" => ShelfBadgeKind.Loading,
+            "updated" or "pageloaded" or "loaded" or "complete" => ShelfBadgeKind.Updated,
+            "changed" => ShelfBadgeKind.Changed,
+            "done" or "finished" or "responsefinished" => ShelfBadgeKind.Done,
+            "doneneedsreview" or "readyforreview" => ShelfBadgeKind.DoneNeedsReview,
+            "needsreview" => ShelfBadgeKind.NeedsReview,
+            "running" or "working" => ShelfBadgeKind.Running,
+            "editingfiles" or "editing" => ShelfBadgeKind.EditingFiles,
+            "runningcommand" or "commandrunning" => ShelfBadgeKind.RunningCommand,
+            "waitingforapproval" or "permissionrequest" => ShelfBadgeKind.WaitingForApproval,
+            "needsinput" or "inputrequired" => ShelfBadgeKind.NeedsInput,
+            "playing" => ShelfBadgeKind.Playing,
+            "paused" => ShelfBadgeKind.Paused,
+            "uploadcomplete" => ShelfBadgeKind.UploadComplete,
+            "failed" or "failure" => ShelfBadgeKind.Failed,
+            "error" => ShelfBadgeKind.Error,
+            _ => ShelfBadgeKind.None
+        };
     }
 
     private static bool ShouldReplaceBadge(ShelfBadgeKind current, ShelfBadgeKind next)
@@ -522,22 +884,108 @@ internal sealed class WindowShelver
             return false;
         }
 
-        if (next == ShelfBadgeKind.Closed || next == ShelfBadgeKind.NeedsAttention)
+        if (next == ShelfBadgeKind.Closed)
         {
             return true;
         }
 
-        if (current == ShelfBadgeKind.NeedsAttention && next != ShelfBadgeKind.Closed)
+        if (IsRunningBadge(next) && IsFinalBadge(current))
         {
-            return false;
+            return true;
         }
 
-        if (next == ShelfBadgeKind.Done)
+        return GetBadgePriority(next) >= GetBadgePriority(current);
+    }
+
+    private static int GetBadgePriority(ShelfBadgeKind badgeKind)
+    {
+        return badgeKind switch
         {
-            return current is ShelfBadgeKind.None or ShelfBadgeKind.Changed or ShelfBadgeKind.Updated or ShelfBadgeKind.Done;
+            ShelfBadgeKind.Closed => 100,
+            ShelfBadgeKind.Failed or ShelfBadgeKind.Error => 90,
+            ShelfBadgeKind.WaitingForApproval or ShelfBadgeKind.NeedsInput or ShelfBadgeKind.NeedsAttention => 80,
+            ShelfBadgeKind.DoneNeedsReview or ShelfBadgeKind.NeedsReview => 70,
+            ShelfBadgeKind.Done or ShelfBadgeKind.UploadComplete => 65,
+            ShelfBadgeKind.Running or ShelfBadgeKind.EditingFiles or ShelfBadgeKind.RunningCommand => 55,
+            ShelfBadgeKind.Loading or ShelfBadgeKind.Playing or ShelfBadgeKind.Paused => 45,
+            ShelfBadgeKind.Changed or ShelfBadgeKind.Updated => 30,
+            _ => 0
+        };
+    }
+
+    private static bool IsRunningBadge(ShelfBadgeKind badgeKind)
+    {
+        return badgeKind is ShelfBadgeKind.Running or
+            ShelfBadgeKind.EditingFiles or
+            ShelfBadgeKind.RunningCommand or
+            ShelfBadgeKind.Loading;
+    }
+
+    private static bool IsFinalBadge(ShelfBadgeKind badgeKind)
+    {
+        return badgeKind is ShelfBadgeKind.Done or
+            ShelfBadgeKind.DoneNeedsReview or
+            ShelfBadgeKind.NeedsReview or
+            ShelfBadgeKind.UploadComplete or
+            ShelfBadgeKind.Failed or
+            ShelfBadgeKind.Error;
+    }
+
+    private static string BuildBridgeDetail(ShelfBridgeEvent bridgeEvent)
+    {
+        if (!string.IsNullOrWhiteSpace(bridgeEvent.Details))
+        {
+            return bridgeEvent.Details;
         }
 
-        return true;
+        if (bridgeEvent.FilesChanged is { } filesChanged)
+        {
+            return filesChanged == 1 ? "1 file changed" : $"{filesChanged} files changed";
+        }
+
+        return bridgeEvent.Message;
+    }
+
+    private static bool IsAgentBridgeEvent(ShelfBridgeEvent bridgeEvent)
+    {
+        var token = NormalizeToken(
+            $"{bridgeEvent.Source} {bridgeEvent.EventName} {bridgeEvent.Tool} {bridgeEvent.Message}");
+
+        return token.Contains("codex", StringComparison.Ordinal) ||
+               token.Contains("claude", StringComparison.Ordinal) ||
+               token.Contains("cursor", StringComparison.Ordinal) ||
+               token.Contains("agent", StringComparison.Ordinal) ||
+               token.Contains("pretooluse", StringComparison.Ordinal) ||
+               token.Contains("posttooluse", StringComparison.Ordinal) ||
+               token.Contains("permissionrequest", StringComparison.Ordinal) ||
+               token.Contains("userpromptsubmit", StringComparison.Ordinal) ||
+               token.Contains("stopfailure", StringComparison.Ordinal);
+    }
+
+    private static bool IsFileEditingTool(string normalizedTool, string text)
+    {
+        return normalizedTool.Contains("applypatch", StringComparison.Ordinal) ||
+               normalizedTool.Contains("edit", StringComparison.Ordinal) ||
+               normalizedTool.Contains("write", StringComparison.Ordinal) ||
+               LooksAgentEditing(text);
+    }
+
+    private static bool IsCommandTool(string normalizedTool, string text)
+    {
+        return normalizedTool.Contains("shell", StringComparison.Ordinal) ||
+               normalizedTool.Contains("command", StringComparison.Ordinal) ||
+               normalizedTool.Contains("exec", StringComparison.Ordinal) ||
+               LooksAgentRunningCommand(text);
+    }
+
+    private static string NormalizeToken(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        return new string(value.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
     }
 
     private static bool LooksDone(string title)
@@ -556,15 +1004,92 @@ internal sealed class WindowShelver
                title.Contains("0:00", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool LooksLikeNeedsAttention(string title)
+    private static bool LooksFailure(string text)
     {
-        return title.Contains("error", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("failure", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("cancel", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("sign in", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("password", StringComparison.OrdinalIgnoreCase) ||
-               title.Contains("attention", StringComparison.OrdinalIgnoreCase);
+        return text.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("failure", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("exception", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("build failed", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("tests failed", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("stopfailure", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksError(string text)
+    {
+        return text.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("failure", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("cannot continue", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("something went wrong", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksLikeNeedsInput(string text)
+    {
+        return text.Contains("needs input", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("input required", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("sign in", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("password", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("choose an option", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("click next", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("waiting for input", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksLikeApproval(string text)
+    {
+        return text.Contains("approval", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("permission", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("wants permission", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("allow this", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("confirm", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("proceed?", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksUploadComplete(string text)
+    {
+        return text.Contains("upload complete", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("uploaded", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("sync complete", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksPlaying(string text)
+    {
+        return text.Contains("playing", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("watching", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksPaused(string text)
+    {
+        return text.Contains("paused", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksLoading(string text)
+    {
+        return text.Contains("loading", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("please wait", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("uploading", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("installing", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("downloading", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("processing", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksAgentEditing(string text)
+    {
+        return text.Contains("editing files", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("applying patch", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("updated file", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("writing file", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksAgentRunningCommand(string text)
+    {
+        return text.Contains("running command", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("shell command", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("npm ", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("dotnet ", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("cargo ", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("pytest", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("powershell", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool LooksBusy(string text)

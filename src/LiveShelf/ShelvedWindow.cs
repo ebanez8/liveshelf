@@ -10,12 +10,16 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     private static readonly Brush ClosedBrush = new SolidColorBrush(Color.FromRgb(238, 105, 117));
     private static readonly Brush ChangedBrush = new SolidColorBrush(Color.FromRgb(117, 196, 255));
     private static readonly Brush UpdatedBrush = new SolidColorBrush(Color.FromRgb(93, 232, 222));
+    private static readonly Brush RunningBrush = new SolidColorBrush(Color.FromRgb(117, 196, 255));
     private static readonly Brush DoneBrush = new SolidColorBrush(Color.FromRgb(95, 220, 139));
+    private static readonly Brush NeedsReviewBrush = new SolidColorBrush(Color.FromRgb(142, 232, 145));
     private static readonly Brush NeedsAttentionBrush = new SolidColorBrush(Color.FromRgb(255, 196, 87));
+    private static readonly Brush ErrorBrush = new SolidColorBrush(Color.FromRgb(238, 105, 117));
     private static readonly Brush EmptyBadgeBrush = Brushes.Transparent;
 
     private string _title;
     private string _badgeText = string.Empty;
+    private string _statusText = string.Empty;
     private Brush _badgeBrush = EmptyBadgeBrush;
     private ShelfBadgeKind _badgeKind = ShelfBadgeKind.None;
     private bool _isExpanded;
@@ -28,13 +32,15 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
         IntPtr thumbnailHandle,
         NativeMethods.WINDOWPLACEMENT originalPlacement,
         string title,
-        string processName)
+        string processName,
+        int sourceProcessId)
     {
         SourceHwnd = sourceHwnd;
         ThumbnailHandle = thumbnailHandle;
         OriginalPlacement = originalPlacement;
         _title = string.IsNullOrWhiteSpace(title) ? processName : title;
         ProcessName = processName;
+        SourceProcessId = sourceProcessId;
         LastObservedChangeUtc = DateTime.UtcNow;
     }
 
@@ -49,6 +55,8 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     internal IntPtr LastInputTargetHwnd { get; set; }
 
     public string ProcessName { get; }
+
+    public int SourceProcessId { get; }
 
     internal DateTime LastObservedChangeUtc { get; set; }
 
@@ -203,11 +211,31 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
         ? Visibility.Collapsed
         : Visibility.Visible;
 
+    public string StatusText
+    {
+        get => _statusText;
+        private set
+        {
+            if (_statusText == value)
+            {
+                return;
+            }
+
+            _statusText = value;
+            OnPropertyChanged(nameof(StatusText));
+            OnPropertyChanged(nameof(StatusTextVisibility));
+        }
+    }
+
+    public Visibility StatusTextVisibility => string.IsNullOrWhiteSpace(StatusText)
+        ? Visibility.Collapsed
+        : Visibility.Visible;
+
     public string InteractionText => IsInteractive ? "Exit" : "Use";
 
     public string ZoomText => IsZoomed ? "Max" : "Zoom";
 
-    internal void SetBadge(ShelfBadgeKind kind)
+    internal void SetBadge(ShelfBadgeKind kind, string detail = "")
     {
         BadgeKind = kind;
 
@@ -215,11 +243,26 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
         {
             ShelfBadgeKind.Changed => ("Changed", ChangedBrush),
             ShelfBadgeKind.Updated => ("Updated", UpdatedBrush),
+            ShelfBadgeKind.Loading => ("Loading", RunningBrush),
+            ShelfBadgeKind.Running => ("Running", RunningBrush),
+            ShelfBadgeKind.EditingFiles => ("Editing files", RunningBrush),
+            ShelfBadgeKind.RunningCommand => ("Running command", RunningBrush),
+            ShelfBadgeKind.WaitingForApproval => ("Waiting for approval", NeedsAttentionBrush),
             ShelfBadgeKind.Done => ("Done", DoneBrush),
+            ShelfBadgeKind.DoneNeedsReview => ("Done • Needs review", NeedsReviewBrush),
+            ShelfBadgeKind.NeedsReview => ("Needs review", NeedsReviewBrush),
             ShelfBadgeKind.Closed => ("Closed", ClosedBrush),
             ShelfBadgeKind.NeedsAttention => ("Needs attention", NeedsAttentionBrush),
+            ShelfBadgeKind.NeedsInput => ("Needs input", NeedsAttentionBrush),
+            ShelfBadgeKind.Playing => ("Playing", DoneBrush),
+            ShelfBadgeKind.Paused => ("Paused", UpdatedBrush),
+            ShelfBadgeKind.UploadComplete => ("Upload complete", DoneBrush),
+            ShelfBadgeKind.Failed => ("Failed", ErrorBrush),
+            ShelfBadgeKind.Error => ("Error", ErrorBrush),
             _ => (string.Empty, EmptyBadgeBrush)
         };
+
+        StatusText = BuildStatusText(BadgeText, detail);
     }
 
     internal void MarkAttentionSeen()
@@ -234,6 +277,27 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
+
+    private static string BuildStatusText(string badgeText, string detail)
+    {
+        if (string.IsNullOrWhiteSpace(badgeText))
+        {
+            return string.Empty;
+        }
+
+        detail = detail.Trim();
+        if (detail.Length == 0)
+        {
+            return badgeText;
+        }
+
+        if (detail.Length > 120)
+        {
+            detail = detail[..117] + "...";
+        }
+
+        return $"{badgeText} - {detail}";
+    }
 }
 
 public enum ShelfBadgeKind
@@ -241,7 +305,20 @@ public enum ShelfBadgeKind
     None,
     Changed,
     Updated,
+    Loading,
+    Running,
+    EditingFiles,
+    RunningCommand,
+    WaitingForApproval,
     Done,
+    DoneNeedsReview,
+    NeedsReview,
     Closed,
-    NeedsAttention
+    NeedsAttention,
+    NeedsInput,
+    Playing,
+    Paused,
+    UploadComplete,
+    Failed,
+    Error
 }

@@ -28,8 +28,15 @@ internal static class NativeMethods
     internal const int MK_SHIFT = 0x0004;
     internal const int MK_CONTROL = 0x0008;
 
-    internal const int SW_RESTORE = 9;
+    internal const int SW_SHOWNORMAL = 1;
+    internal const int SW_SHOWMINIMIZED = 2;
+    internal const int SW_SHOWMAXIMIZED = 3;
     internal const int SW_SHOWNOACTIVATE = 4;
+    internal const int SW_SHOW = 5;
+    internal const int SW_MINIMIZE = 6;
+    internal const int SW_SHOWMINNOACTIVE = 7;
+    internal const int SW_SHOWNA = 8;
+    internal const int SW_RESTORE = 9;
 
     internal const int GWL_EXSTYLE = -20;
     internal const int WS_EX_APPWINDOW = 0x00040000;
@@ -200,6 +207,12 @@ internal static class NativeMethods
         {
             return "Unknown";
         }
+    }
+
+    internal static int GetProcessId(IntPtr hwnd)
+    {
+        GetWindowThreadProcessId(hwnd, out var processId);
+        return (int)processId;
     }
 
     internal static bool IsNormalAppWindow(IntPtr hwnd, IntPtr shelfHwnd, out string reason)
