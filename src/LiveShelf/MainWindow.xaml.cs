@@ -17,9 +17,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 {
     private const int ShelfHotkeyId = 0x5153;
     private const int ToggleShelfHotkeyId = 0x4848;
+    private const int EmergencyRestoreHotkeyId = 0x5252;
     private const int HotkeyModifiers = NativeMethods.MOD_ALT | NativeMethods.MOD_CONTROL | NativeMethods.MOD_NOREPEAT;
+    private const int EmergencyRestoreHotkeyModifiers = NativeMethods.MOD_ALT | NativeMethods.MOD_CONTROL | NativeMethods.MOD_SHIFT | NativeMethods.MOD_NOREPEAT;
     private const int ShelfHotkeyVirtualKey = 0x53; // S
     private const int ToggleShelfHotkeyVirtualKey = 0x48; // H
+    private const int EmergencyRestoreHotkeyVirtualKey = 0x52; // R
 
     private const double ShelfWidth = 264;
     private const double PeekShelfWidth = 440;
@@ -122,6 +125,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         StopThumbnailAnimationRefresh();
         NativeMethods.UnregisterHotKey(_windowHandle, ShelfHotkeyId);
         NativeMethods.UnregisterHotKey(_windowHandle, ToggleShelfHotkeyId);
+        NativeMethods.UnregisterHotKey(_windowHandle, EmergencyRestoreHotkeyId);
         _source?.RemoveHook(WndProc);
         RestoreShelvedWindowsForShutdown();
     }
@@ -198,6 +202,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return IntPtr.Zero;
         }
 
+        if (wParam.ToInt32() == EmergencyRestoreHotkeyId)
+        {
+            handled = true;
+            RestoreShelvedWindowsForShutdown();
+            StatusMessage = "Restored shelved windows";
+            return IntPtr.Zero;
+        }
+
         return IntPtr.Zero;
     }
 
@@ -214,14 +226,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             ToggleShelfHotkeyId,
             HotkeyModifiers,
             ToggleShelfHotkeyVirtualKey);
+        var emergencyRestoreHotkeyRegistered = NativeMethods.RegisterHotKey(
+            _windowHandle,
+            EmergencyRestoreHotkeyId,
+            EmergencyRestoreHotkeyModifiers,
+            EmergencyRestoreHotkeyVirtualKey);
 
-        if (shelfHotkeyRegistered && toggleHotkeyRegistered)
+        if (shelfHotkeyRegistered && toggleHotkeyRegistered && emergencyRestoreHotkeyRegistered)
         {
             return;
         }
 
         StatusMessage = shelfHotkeyRegistered
-            ? "Hide hotkey unavailable"
+            ? toggleHotkeyRegistered
+                ? "Emergency restore hotkey unavailable"
+                : "Hide hotkey unavailable"
             : toggleHotkeyRegistered
                 ? "Shelf hotkey unavailable"
                 : "Hotkeys unavailable";
@@ -365,6 +384,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             ForgetPeek(item);
             _shelver?.Remove(item, restoreIfAlive: true);
+        }
+    }
+
+    private void MediaPlayPauseButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (GetItemFromSender(sender) is { } item)
+        {
+            _shelver?.ToggleMediaPlayback(item);
+            e.Handled = true;
         }
     }
 

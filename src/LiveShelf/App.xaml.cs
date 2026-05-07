@@ -12,6 +12,8 @@ public partial class App : Application
         DispatcherUnhandledException += App_DispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
         TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
+
+        ShelvedWindowRegistry.RestoreRegisteredWindows();
     }
 
     private static void App_DispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
@@ -21,9 +23,11 @@ public partial class App : Application
         if (Current.MainWindow is MainWindow window)
         {
             window.ReportRuntimeError(e.Exception);
+            window.RestoreShelvedWindowsForShutdown();
         }
 
         e.Handled = true;
+        Current.Shutdown(1);
     }
 
     private static void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
@@ -32,11 +36,18 @@ public partial class App : Application
         {
             CrashLogger.Log(exception);
         }
+
+        ShelvedWindowRegistry.RestoreRegisteredWindows();
     }
 
     private static void TaskScheduler_UnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
     {
         CrashLogger.Log(e.Exception);
+        if (Current.MainWindow is MainWindow window)
+        {
+            window.RestoreShelvedWindowsForShutdown();
+        }
+
         e.SetObserved();
     }
 

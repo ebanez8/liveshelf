@@ -23,6 +23,18 @@
         <SolidColorBrush x:Key="CardBorder" Color="#343C48"/>
         <SolidColorBrush x:Key="TextMuted" Color="#9DA7B5"/>
 
+        <Style x:Key="MediaButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="MinWidth" Value="48"/>
+            <Setter Property="Height" Value="22"/>
+            <Setter Property="Padding" Value="8,0"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+            <Setter Property="Background" Value="#2A3039"/>
+            <Setter Property="BorderBrush" Value="#465061"/>
+            <Setter Property="Foreground" Value="#EEF2F7"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+
         <Style x:Key="MenuItemStyle" TargetType="{x:Type MenuItem}">
             <Setter Property="Padding" Value="12,7"/>
         </Style>
@@ -104,10 +116,13 @@
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
 
                                     <Grid Grid.Row="0" Margin="0,0,0,8">
                                         <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
@@ -118,7 +133,7 @@
 
                                         <TextBlock Grid.Row="0"
                                                    Grid.Column="0"
-                                                   Text="{Binding Title}"
+                                                   Text="{Binding CardTitle}"
                                                    FontSize="12"
                                                    FontWeight="SemiBold"
                                                    TextTrimming="CharacterEllipsis"
@@ -133,6 +148,29 @@
                                                    Margin="0,3,0,0"
                                                    TextTrimming="CharacterEllipsis"
                                                    Visibility="{Binding StatusTextVisibility}"/>
+
+                                        <TextBlock Grid.Row="2"
+                                                   Grid.Column="0"
+                                                   Grid.ColumnSpan="2"
+                                                   Text="{Binding DetailText}"
+                                                   Foreground="{StaticResource TextMuted}"
+                                                   FontSize="10"
+                                                   Margin="0,2,0,0"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Visibility="{Binding DetailTextVisibility}"/>
+
+                                        <ProgressBar Grid.Row="3"
+                                                     Grid.Column="0"
+                                                     Grid.ColumnSpan="2"
+                                                     Height="4"
+                                                     Margin="0,6,0,0"
+                                                     Minimum="0"
+                                                     Maximum="100"
+                                                     Value="{Binding MediaProgressPercent, Mode=OneWay}"
+                                                     Foreground="#5FDCD5"
+                                                     Background="#121820"
+                                                     BorderThickness="0"
+                                                     Visibility="{Binding MediaProgressVisibility}"/>
 
                                         <StackPanel Grid.Row="0"
                                                     Grid.Column="1"
@@ -158,7 +196,17 @@
                                         </StackPanel>
                                     </Grid>
 
-                                    <Grid Grid.Row="1">
+                                    <StackPanel Grid.Row="1"
+                                                Orientation="Horizontal"
+                                                Margin="0,0,0,8"
+                                                Visibility="{Binding MediaControlsVisibility}">
+                                        <Button Content="{Binding MediaPlayPauseText}"
+                                                Tag="{Binding}"
+                                                Style="{StaticResource MediaButtonStyle}"
+                                                Click="MediaPlayPauseButton_Click"/>
+                                    </StackPanel>
+
+                                    <Grid Grid.Row="2">
                                         <Border x:Name="PreviewSurface"
                                                 Tag="{Binding}"
                                                 Height="108"

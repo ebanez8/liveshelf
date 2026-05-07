@@ -19,6 +19,8 @@ internal static class NativeMethods
     internal const int WM_RBUTTONUP = 0x0205;
     internal const int WM_MOUSEWHEEL = 0x020A;
 
+    internal const int MOD_SHIFT = 0x0004;
+
     internal const int MOD_ALT = 0x0001;
     internal const int MOD_CONTROL = 0x0002;
     internal const int MOD_NOREPEAT = 0x4000;

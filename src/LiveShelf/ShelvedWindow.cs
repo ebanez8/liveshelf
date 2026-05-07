@@ -20,12 +20,20 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     private string _title;
     private string _badgeText = string.Empty;
     private string _statusText = string.Empty;
+    private string _detailText = string.Empty;
+    private string _mediaSourceTitle = string.Empty;
+    private string _mediaSessionId = string.Empty;
+    private string _mediaPlayPauseText = "Play";
+    private double _mediaProgressPercent;
     private Brush _badgeBrush = EmptyBadgeBrush;
     private ShelfBadgeKind _badgeKind = ShelfBadgeKind.None;
     private bool _isExpanded;
     private bool _isZoomed;
     private bool _isSourceAlive = true;
     private bool _isInteractive;
+    private bool _isMediaCard;
+    private bool _hasMediaProgress;
+    private bool _canToggleMediaPlayback;
 
     internal ShelvedWindow(
         IntPtr sourceHwnd,
@@ -53,6 +61,8 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     internal NativeMethods.WINDOWPLACEMENT OriginalPlacement { get; }
 
     internal IntPtr LastInputTargetHwnd { get; set; }
+
+    internal string MediaSessionId => _mediaSessionId;
 
     public string ProcessName { get; }
 
@@ -119,8 +129,13 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
             _title = value;
             OnPropertyChanged(nameof(Title));
+            OnPropertyChanged(nameof(CardTitle));
         }
     }
+
+    public string CardTitle => IsMediaCard && !string.IsNullOrWhiteSpace(MediaSourceTitle)
+        ? MediaSourceTitle
+        : Title;
 
     public bool IsExpanded
     {
@@ -233,6 +248,130 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
         ? Visibility.Collapsed
         : Visibility.Visible;
 
+    public string DetailText
+    {
+        get => _detailText;
+        private set
+        {
+            if (_detailText == value)
+            {
+                return;
+            }
+
+            _detailText = value;
+            OnPropertyChanged(nameof(DetailText));
+            OnPropertyChanged(nameof(DetailTextVisibility));
+        }
+    }
+
+    public Visibility DetailTextVisibility => string.IsNullOrWhiteSpace(DetailText)
+        ? Visibility.Collapsed
+        : Visibility.Visible;
+
+    public bool IsMediaCard
+    {
+        get => _isMediaCard;
+        private set
+        {
+            if (_isMediaCard == value)
+            {
+                return;
+            }
+
+            _isMediaCard = value;
+            OnPropertyChanged(nameof(IsMediaCard));
+            OnPropertyChanged(nameof(CardTitle));
+            OnPropertyChanged(nameof(MediaProgressVisibility));
+            OnPropertyChanged(nameof(MediaControlsVisibility));
+        }
+    }
+
+    public string MediaSourceTitle
+    {
+        get => _mediaSourceTitle;
+        private set
+        {
+            if (_mediaSourceTitle == value)
+            {
+                return;
+            }
+
+            _mediaSourceTitle = value;
+            OnPropertyChanged(nameof(MediaSourceTitle));
+            OnPropertyChanged(nameof(CardTitle));
+        }
+    }
+
+    public double MediaProgressPercent
+    {
+        get => _mediaProgressPercent;
+        private set
+        {
+            if (Math.Abs(_mediaProgressPercent - value) < 0.1)
+            {
+                return;
+            }
+
+            _mediaProgressPercent = value;
+            OnPropertyChanged(nameof(MediaProgressPercent));
+        }
+    }
+
+    public bool HasMediaProgress
+    {
+        get => _hasMediaProgress;
+        private set
+        {
+            if (_hasMediaProgress == value)
+            {
+                return;
+            }
+
+            _hasMediaProgress = value;
+            OnPropertyChanged(nameof(HasMediaProgress));
+            OnPropertyChanged(nameof(MediaProgressVisibility));
+        }
+    }
+
+    public Visibility MediaProgressVisibility => IsMediaCard && HasMediaProgress
+        ? Visibility.Visible
+        : Visibility.Collapsed;
+
+    public bool CanToggleMediaPlayback
+    {
+        get => _canToggleMediaPlayback;
+        private set
+        {
+            if (_canToggleMediaPlayback == value)
+            {
+                return;
+            }
+
+            _canToggleMediaPlayback = value;
+            OnPropertyChanged(nameof(CanToggleMediaPlayback));
+            OnPropertyChanged(nameof(MediaControlsVisibility));
+        }
+    }
+
+    public Visibility MediaControlsVisibility => IsMediaCard && CanToggleMediaPlayback
+        ? Visibility.Visible
+        : Visibility.Collapsed;
+
+    public string MediaPlayPauseText
+    {
+        get => _mediaPlayPauseText;
+        private set
+        {
+            if (_mediaPlayPauseText == value)
+            {
+                return;
+            }
+
+            _mediaPlayPauseText = value;
+            OnPropertyChanged(nameof(MediaPlayPauseText));
+        }
+    }
+
     public string InteractionText => IsInteractive ? "Exit" : "Use";
 
     public string ZoomText => IsZoomed ? "Max" : "Zoom";
@@ -253,6 +392,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
             ShelfBadgeKind.Done => ("Done", DoneBrush),
             ShelfBadgeKind.DoneNeedsReview => ("Done • Needs review", NeedsReviewBrush),
             ShelfBadgeKind.NeedsReview => ("Needs review", NeedsReviewBrush),
+            ShelfBadgeKind.ResponseFinished => ("Response finished", DoneBrush),
             ShelfBadgeKind.Closed => ("Closed", ClosedBrush),
             ShelfBadgeKind.NeedsAttention => ("Needs attention", NeedsAttentionBrush),
             ShelfBadgeKind.NeedsInput => ("Needs input", NeedsAttentionBrush),
@@ -264,7 +404,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
             _ => (string.Empty, EmptyBadgeBrush)
         };
 
-        StatusText = BuildStatusText(BadgeText, detail);
+        (StatusText, DetailText) = BuildStatusLines(kind, BadgeText, detail);
     }
 
     internal void MarkAttentionSeen()
@@ -280,25 +420,92 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
 
-    private static string BuildStatusText(string badgeText, string detail)
+    private static (string Status, string Detail) BuildStatusLines(
+        ShelfBadgeKind kind,
+        string badgeText,
+        string detail)
     {
         if (string.IsNullOrWhiteSpace(badgeText))
         {
-            return string.Empty;
+            return (string.Empty, string.Empty);
         }
 
         detail = detail.Trim();
-        if (detail.Length == 0)
-        {
-            return badgeText;
-        }
-
         if (detail.Length > 120)
         {
             detail = detail[..117] + "...";
         }
 
-        return $"{badgeText} - {detail}";
+        var status = kind switch
+        {
+            ShelfBadgeKind.EditingFiles => "Editing files...",
+            ShelfBadgeKind.RunningCommand => "Running command...",
+            ShelfBadgeKind.Running => "Running...",
+            ShelfBadgeKind.Loading => "Loading...",
+            _ => badgeText
+        };
+
+        if (detail.Length == 0)
+        {
+            return (status, string.Empty);
+        }
+
+        return kind is ShelfBadgeKind.Playing or ShelfBadgeKind.Paused
+            ? ($"{status} • {detail}", string.Empty)
+            : (status, detail);
+    }
+
+    internal void SetMediaStatus(
+        string sessionId,
+        string sourceTitle,
+        ShelfBadgeKind kind,
+        string statusDetail,
+        string mediaDetail,
+        double progress,
+        bool hasProgress,
+        bool canTogglePlayback)
+    {
+        _mediaSessionId = sessionId;
+        IsMediaCard = true;
+        MediaSourceTitle = sourceTitle;
+        MediaProgressPercent = Math.Clamp(progress * 100, 0, 100);
+        HasMediaProgress = hasProgress;
+        CanToggleMediaPlayback = canTogglePlayback;
+        MediaPlayPauseText = kind == ShelfBadgeKind.Playing ? "Pause" : "Play";
+
+        BadgeKind = kind;
+        (BadgeText, BadgeBrush) = kind switch
+        {
+            ShelfBadgeKind.Playing => ("Playing", DoneBrush),
+            ShelfBadgeKind.Paused => ("Paused", UpdatedBrush),
+            ShelfBadgeKind.Done => ("Done", DoneBrush),
+            _ => ("Media", UpdatedBrush)
+        };
+
+        StatusText = string.IsNullOrWhiteSpace(statusDetail)
+            ? BadgeText
+            : $"{BadgeText} • {statusDetail}";
+        DetailText = mediaDetail;
+    }
+
+    internal void ClearMediaStatus()
+    {
+        if (!IsMediaCard)
+        {
+            return;
+        }
+
+        _mediaSessionId = string.Empty;
+        IsMediaCard = false;
+        MediaSourceTitle = string.Empty;
+        HasMediaProgress = false;
+        MediaProgressPercent = 0;
+        CanToggleMediaPlayback = false;
+
+        if (BadgeKind is ShelfBadgeKind.Playing or ShelfBadgeKind.Paused)
+        {
+            SetBadge(ShelfBadgeKind.None);
+        }
     }
 }
 
@@ -315,6 +522,7 @@ public enum ShelfBadgeKind
     Done,
     DoneNeedsReview,
     NeedsReview,
+    ResponseFinished,
     Closed,
     NeedsAttention,
     NeedsInput,

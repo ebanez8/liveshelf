@@ -15,6 +15,8 @@ internal sealed class WindowShelver
     private readonly DispatcherTimer _monitorTimer;
     private readonly Dispatcher _dispatcher;
     private readonly ShelfEventBridge _eventBridge;
+    private readonly MediaSessionService _mediaSessionService;
+    private IReadOnlyList<MediaSessionSnapshot> _latestMediaSessions = [];
     private IntPtr _lastForegroundWindow;
     private bool _thumbnailsVisible = true;
     private bool _isRestoringAll;
@@ -34,6 +36,10 @@ internal sealed class WindowShelver
 
         _eventBridge = new ShelfEventBridge();
         _eventBridge.EventReceived += EventBridge_EventReceived;
+
+        _mediaSessionService = new MediaSessionService();
+        _mediaSessionService.SessionsChanged += MediaSessionService_SessionsChanged;
+        _mediaSessionService.Start();
     }
 
     public event EventHandler<string>? StatusChanged;
@@ -80,13 +86,16 @@ internal sealed class WindowShelver
 
         try
         {
+            ShelvedWindowRegistry.AddOrUpdate(item);
             ParkSourceWindow(sourceHwnd, currentRect);
             _items.Add(item);
+            _mediaSessionService.RefreshSoon();
             StatusChanged?.Invoke(this, $"Shelved {item.ProcessName}");
             ThumbnailRefreshRequested?.Invoke(this, EventArgs.Empty);
         }
         catch
         {
+            ShelvedWindowRegistry.Remove(item);
             NativeMethods.DwmUnregisterThumbnail(thumbnailHandle);
             throw;
         }
@@ -103,6 +112,7 @@ internal sealed class WindowShelver
         UnregisterThumbnail(item);
 
         RestoreSourceWindow(item, activate: true);
+        ShelvedWindowRegistry.Remove(item);
 
         _items.Remove(item);
         StatusChanged?.Invoke(this, "Ready");
@@ -123,6 +133,8 @@ internal sealed class WindowShelver
             RestoreSourceWindow(item, activate: false);
         }
 
+        ShelvedWindowRegistry.Remove(item);
+
         _items.Remove(item);
         StatusChanged?.Invoke(this, "Ready");
     }
@@ -142,8 +154,20 @@ internal sealed class WindowShelver
             NativeMethods.PostMessageW(item.SourceHwnd, NativeMethods.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
         }
 
+        ShelvedWindowRegistry.Remove(item);
+
         _items.Remove(item);
         StatusChanged?.Invoke(this, "Ready");
+    }
+
+    public void ToggleMediaPlayback(ShelvedWindow item)
+    {
+        if (!_items.Contains(item) || string.IsNullOrWhiteSpace(item.MediaSessionId))
+        {
+            return;
+        }
+
+        _ = _mediaSessionService.TogglePlayPauseAsync(item.MediaSessionId);
     }
 
     public void RestoreAll()
@@ -156,6 +180,7 @@ internal sealed class WindowShelver
         _isRestoringAll = true;
         _monitorTimer.Stop();
         _eventBridge.Dispose();
+        _mediaSessionService.Dispose();
 
         foreach (var item in _items.ToArray())
         {
@@ -354,6 +379,7 @@ internal sealed class WindowShelver
             EndInteractiveZoom(item);
             UnregisterThumbnail(item);
             RestoreSourceWindow(item, activate: false);
+            ShelvedWindowRegistry.Remove(item);
         }
         finally
         {
@@ -439,7 +465,12 @@ internal sealed class WindowShelver
                 item.HasDetectedChange = true;
                 item.HasReportedStable = false;
                 item.IsAgentLikeSession |= LooksLikeAgentSession(item.ProcessName, item.Title);
-                SetBadgeAndAlert(item, GetTitleChangeBadge(item));
+                if (!item.IsMediaCard)
+                {
+                    SetBadgeAndAlert(item, GetTitleChangeBadge(item));
+                }
+
+                ApplyMediaSessions(_latestMediaSessions);
             }
 
             ObserveWindowContent(item, now);
@@ -451,6 +482,13 @@ internal sealed class WindowShelver
     private void EventBridge_EventReceived(object? sender, ShelfBridgeEvent bridgeEvent)
     {
         _dispatcher.InvokeAsync(() => ApplyBridgeEvent(bridgeEvent));
+    }
+
+    private void MediaSessionService_SessionsChanged(
+        object? sender,
+        IReadOnlyList<MediaSessionSnapshot> sessions)
+    {
+        _dispatcher.InvokeAsync(() => ApplyMediaSessions(sessions));
     }
 
     private void ApplyBridgeEvent(ShelfBridgeEvent bridgeEvent)
@@ -545,8 +583,306 @@ internal sealed class WindowShelver
         return null;
     }
 
+    private void ApplyMediaSessions(IReadOnlyList<MediaSessionSnapshot> sessions)
+    {
+        _latestMediaSessions = sessions;
+
+        if (_items.Count == 0)
+        {
+            return;
+        }
+
+        var assignedSessionIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in _items)
+        {
+            var match = FindBestMediaSessionMatch(item, sessions, assignedSessionIds);
+            if (match is null)
+            {
+                item.ClearMediaStatus();
+                continue;
+            }
+
+            assignedSessionIds.Add(match.SessionId);
+            ApplyMediaStatus(item, match);
+        }
+    }
+
+    private MediaSessionSnapshot? FindBestMediaSessionMatch(
+        ShelvedWindow item,
+        IReadOnlyList<MediaSessionSnapshot> sessions,
+        HashSet<string> assignedSessionIds)
+    {
+        MediaSessionSnapshot? bestSession = null;
+        var bestScore = 0;
+
+        foreach (var session in sessions)
+        {
+            if (assignedSessionIds.Contains(session.SessionId) || !IsUsableMediaSession(session))
+            {
+                continue;
+            }
+
+            var score = ScoreMediaSessionMatch(item, session);
+            if (score <= bestScore)
+            {
+                continue;
+            }
+
+            bestSession = session;
+            bestScore = score;
+        }
+
+        if (bestSession is null)
+        {
+            return null;
+        }
+
+        var isBrowser = IsBrowserProcess(item.ProcessName);
+        var threshold = isBrowser ? 48 : 32;
+        if (isBrowser &&
+            bestScore >= 34 &&
+            CountShelvedBrowserWindowsForSession(bestSession) == 1 &&
+            CountBrowserSessionsForSource(bestSession) == 1)
+        {
+            threshold = 34;
+        }
+
+        return bestScore >= threshold ? bestSession : null;
+    }
+
+    private int CountShelvedBrowserWindowsForSession(MediaSessionSnapshot session)
+    {
+        return _items.Count(item =>
+            IsBrowserProcess(item.ProcessName) &&
+            DoesSourceLookLikeProcess(session, item.ProcessName));
+    }
+
+    private int CountBrowserSessionsForSource(MediaSessionSnapshot session)
+    {
+        return _latestMediaSessions.Count(candidate =>
+            IsSameMediaSource(candidate, session) &&
+            (DoesSourceLookLikeProcess(candidate, "chrome") ||
+             DoesSourceLookLikeProcess(candidate, "msedge") ||
+             DoesSourceLookLikeProcess(candidate, "firefox") ||
+             DoesSourceLookLikeProcess(candidate, "brave") ||
+             DoesSourceLookLikeProcess(candidate, "opera")));
+    }
+
+    private static bool IsUsableMediaSession(MediaSessionSnapshot session)
+    {
+        return !session.IsStopped &&
+               (!string.IsNullOrWhiteSpace(session.Title) ||
+                session.IsPlaying ||
+                session.IsPaused ||
+                session.Duration > TimeSpan.FromSeconds(1));
+    }
+
+    private static int ScoreMediaSessionMatch(ShelvedWindow item, MediaSessionSnapshot session)
+    {
+        var score = 0;
+        var processToken = NormalizeToken(item.ProcessName);
+        var titleToken = NormalizeToken(item.Title);
+        var sourceToken = NormalizeToken($"{session.SourceAppUserModelId} {session.SourceDisplayName}");
+        var mediaTitleToken = NormalizeToken(session.Title);
+        var artistToken = NormalizeToken(session.Artist);
+
+        if (!string.IsNullOrWhiteSpace(processToken) &&
+            (sourceToken.Contains(processToken, StringComparison.Ordinal) ||
+             processToken.Contains(sourceToken, StringComparison.Ordinal) ||
+             DoesSourceLookLikeProcess(session, item.ProcessName)))
+        {
+            score += 34;
+        }
+
+        if (!string.IsNullOrWhiteSpace(mediaTitleToken) &&
+            titleToken.Contains(mediaTitleToken, StringComparison.Ordinal))
+        {
+            score += IsBrowserProcess(item.ProcessName) ? 52 : 36;
+        }
+        else if (!string.IsNullOrWhiteSpace(mediaTitleToken) &&
+                 mediaTitleToken.Contains(titleToken, StringComparison.Ordinal) &&
+                 titleToken.Length >= 12)
+        {
+            score += 28;
+        }
+
+        if (!string.IsNullOrWhiteSpace(artistToken) &&
+            titleToken.Contains(artistToken, StringComparison.Ordinal))
+        {
+            score += 12;
+        }
+
+        if (item.IsMediaCard && item.MediaSessionId == session.SessionId)
+        {
+            score += 16;
+        }
+
+        if (session.IsCurrentSession)
+        {
+            score += 8;
+        }
+
+        if (IsBrowserProcess(item.ProcessName) &&
+            ContainsKnownMediaSite(item.Title, session.Title))
+        {
+            score += 14;
+        }
+
+        return score;
+    }
+
+    private static bool DoesSourceLookLikeProcess(MediaSessionSnapshot session, string processName)
+    {
+        var source = NormalizeToken($"{session.SourceAppUserModelId} {session.SourceDisplayName}");
+        var process = NormalizeToken(processName);
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(process))
+        {
+            return false;
+        }
+
+        return source.Contains(process, StringComparison.Ordinal) ||
+               process.Contains(source, StringComparison.Ordinal) ||
+               (process == "msedge" && source.Contains("edge", StringComparison.Ordinal)) ||
+               (process == "chrome" && source.Contains("chrome", StringComparison.Ordinal)) ||
+               (process == "brave" && source.Contains("brave", StringComparison.Ordinal)) ||
+               (process == "spotify" && source.Contains("spotify", StringComparison.Ordinal)) ||
+               (process == "vlc" && source.Contains("vlc", StringComparison.Ordinal));
+    }
+
+    private static bool IsSameMediaSource(MediaSessionSnapshot first, MediaSessionSnapshot second)
+    {
+        var firstSource = NormalizeToken($"{first.SourceAppUserModelId} {first.SourceDisplayName}");
+        var secondSource = NormalizeToken($"{second.SourceAppUserModelId} {second.SourceDisplayName}");
+        return firstSource == secondSource;
+    }
+
+    private static bool ContainsKnownMediaSite(string windowTitle, string mediaTitle)
+    {
+        var text = $"{windowTitle} {mediaTitle}";
+        return text.Contains("YouTube", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("Netflix", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("Twitch", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("Spotify", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("Vimeo", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("SoundCloud", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void ApplyMediaStatus(ShelvedWindow item, MediaSessionSnapshot session)
+    {
+        var kind = session.IsPlaying
+            ? ShelfBadgeKind.Playing
+            : session.IsPaused
+                ? ShelfBadgeKind.Paused
+                : ShelfBadgeKind.Changed;
+        var progressText = FormatProgressText(session);
+        var mediaDetail = FormatMediaDetail(session);
+        var sourceTitle = ResolveMediaSourceTitle(item, session);
+
+        item.SetMediaStatus(
+            session.SessionId,
+            sourceTitle,
+            kind,
+            progressText,
+            mediaDetail,
+            session.Progress,
+            session.Duration > TimeSpan.FromSeconds(1),
+            session.CanTogglePlayPause);
+    }
+
+    private static string ResolveMediaSourceTitle(ShelvedWindow item, MediaSessionSnapshot session)
+    {
+        var title = item.Title;
+        if (title.Contains("YouTube", StringComparison.OrdinalIgnoreCase))
+        {
+            return "YouTube";
+        }
+
+        if (title.Contains("Netflix", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Netflix";
+        }
+
+        if (title.Contains("Twitch", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Twitch";
+        }
+
+        if (title.Contains("Spotify", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Spotify";
+        }
+
+        return IsBrowserProcess(item.ProcessName)
+            ? session.SourceDisplayName
+            : FormatProcessDisplayName(item.ProcessName, session.SourceDisplayName);
+    }
+
+    private static string FormatProcessDisplayName(string processName, string fallback)
+    {
+        if (processName.Contains("spotify", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Spotify";
+        }
+
+        if (processName.Contains("vlc", StringComparison.OrdinalIgnoreCase))
+        {
+            return "VLC";
+        }
+
+        if (processName.Contains("msedge", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Edge";
+        }
+
+        if (processName.Contains("chrome", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Chrome";
+        }
+
+        return string.IsNullOrWhiteSpace(fallback) ? processName : fallback;
+    }
+
+    private static string FormatMediaDetail(MediaSessionSnapshot session)
+    {
+        if (string.IsNullOrWhiteSpace(session.Title))
+        {
+            return string.Empty;
+        }
+
+        return string.IsNullOrWhiteSpace(session.Artist)
+            ? session.Title
+            : $"{session.Artist} - {session.Title}";
+    }
+
+    private static string FormatProgressText(MediaSessionSnapshot session)
+    {
+        if (session.Duration <= TimeSpan.FromSeconds(1))
+        {
+            return string.Empty;
+        }
+
+        return $"{FormatDuration(session.Position)} / {FormatDuration(session.Duration)}";
+    }
+
+    private static string FormatDuration(TimeSpan value)
+    {
+        if (value < TimeSpan.Zero)
+        {
+            value = TimeSpan.Zero;
+        }
+
+        return value.TotalHours >= 1
+            ? $"{(int)value.TotalHours}:{value.Minutes:00}:{value.Seconds:00}"
+            : $"{(int)value.TotalMinutes}:{value.Seconds:00}";
+    }
+
     private void ObserveWindowContent(ShelvedWindow item, DateTime now)
     {
+        if (item.IsMediaCard)
+        {
+            return;
+        }
+
         if (now - item.LastStateProbeUtc < ContentProbeInterval)
         {
             return;
@@ -694,6 +1030,11 @@ internal sealed class WindowShelver
             return ShelfBadgeKind.UploadComplete;
         }
 
+        if (LooksResponseFinished(recentText))
+        {
+            return ShelfBadgeKind.ResponseFinished;
+        }
+
         return LooksDone(recentText) ? ShelfBadgeKind.Done : ShelfBadgeKind.None;
     }
 
@@ -794,7 +1135,11 @@ internal sealed class WindowShelver
             return ShelfBadgeKind.Loading;
         }
 
-        return LooksDone(text) ? ShelfBadgeKind.Done : ShelfBadgeKind.Changed;
+        return LooksResponseFinished(text)
+            ? ShelfBadgeKind.ResponseFinished
+            : LooksDone(text)
+                ? ShelfBadgeKind.Done
+                : ShelfBadgeKind.Changed;
     }
 
     private static ShelfBadgeKind GetAgentTextBadge(string text)
@@ -859,6 +1204,11 @@ internal sealed class WindowShelver
             return ShelfBadgeKind.Loading;
         }
 
+        if (LooksResponseFinished(text))
+        {
+            return ShelfBadgeKind.ResponseFinished;
+        }
+
         if (LooksDone(text))
         {
             return ShelfBadgeKind.Done;
@@ -876,7 +1226,8 @@ internal sealed class WindowShelver
             "loading" or "pageloading" => ShelfBadgeKind.Loading,
             "updated" or "pageloaded" or "loaded" or "complete" => ShelfBadgeKind.Updated,
             "changed" => ShelfBadgeKind.Changed,
-            "done" or "finished" or "responsefinished" => ShelfBadgeKind.Done,
+            "done" or "finished" => ShelfBadgeKind.Done,
+            "responsefinished" => ShelfBadgeKind.ResponseFinished,
             "doneneedsreview" or "readyforreview" => ShelfBadgeKind.DoneNeedsReview,
             "needsreview" => ShelfBadgeKind.NeedsReview,
             "running" or "working" => ShelfBadgeKind.Running,
@@ -921,7 +1272,7 @@ internal sealed class WindowShelver
             ShelfBadgeKind.Failed or ShelfBadgeKind.Error => 90,
             ShelfBadgeKind.WaitingForApproval or ShelfBadgeKind.NeedsInput or ShelfBadgeKind.NeedsAttention => 80,
             ShelfBadgeKind.DoneNeedsReview or ShelfBadgeKind.NeedsReview => 70,
-            ShelfBadgeKind.Done or ShelfBadgeKind.UploadComplete => 65,
+            ShelfBadgeKind.Done or ShelfBadgeKind.ResponseFinished or ShelfBadgeKind.UploadComplete => 65,
             ShelfBadgeKind.Running or ShelfBadgeKind.EditingFiles or ShelfBadgeKind.RunningCommand => 55,
             ShelfBadgeKind.Loading or ShelfBadgeKind.Playing or ShelfBadgeKind.Paused => 45,
             ShelfBadgeKind.Changed or ShelfBadgeKind.Updated => 30,
@@ -942,6 +1293,7 @@ internal sealed class WindowShelver
         return badgeKind is ShelfBadgeKind.Done or
             ShelfBadgeKind.DoneNeedsReview or
             ShelfBadgeKind.NeedsReview or
+            ShelfBadgeKind.ResponseFinished or
             ShelfBadgeKind.UploadComplete or
             ShelfBadgeKind.Failed or
             ShelfBadgeKind.Error;
@@ -1022,6 +1374,13 @@ internal sealed class WindowShelver
                recent.Contains("task complete", StringComparison.OrdinalIgnoreCase) ||
                recent.Contains("100%", StringComparison.OrdinalIgnoreCase) ||
                recent.Contains("0:00", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksResponseFinished(string text)
+    {
+        return text.Contains("response finished", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("finished responding", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("generation complete", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool LooksFailure(string text)
