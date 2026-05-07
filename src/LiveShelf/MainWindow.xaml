@@ -16,7 +16,8 @@
         Foreground="#EEF2F7"
         Loaded="Window_Loaded"
         Closing="Window_Closing"
-        SizeChanged="Window_SizeChanged">
+        SizeChanged="Window_SizeChanged"
+        MouseLeave="Window_MouseLeave">
     <Window.Resources>
         <SolidColorBrush x:Key="CardBackground" Color="#20252D"/>
         <SolidColorBrush x:Key="CardBorder" Color="#343C48"/>
@@ -105,24 +106,52 @@
                                         <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
 
-                                    <DockPanel Grid.Row="0" Margin="0,0,0,7">
-                                        <Ellipse DockPanel.Dock="Right"
-                                                 Width="8"
-                                                 Height="8"
-                                                 Margin="8,0,1,0"
-                                                 VerticalAlignment="Center"
-                                                 Fill="{Binding StatusBrush}"/>
-                                        <TextBlock Text="{Binding Title}"
+                                    <Grid Grid.Row="0" Margin="0,0,0,8">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <TextBlock Grid.Row="0"
+                                                   Grid.Column="0"
+                                                   Text="{Binding Title}"
                                                    FontSize="12"
                                                    FontWeight="SemiBold"
                                                    TextTrimming="CharacterEllipsis"
                                                    VerticalAlignment="Center"/>
-                                    </DockPanel>
+
+                                        <StackPanel Grid.Row="0"
+                                                    Grid.Column="1"
+                                                    Orientation="Horizontal"
+                                                    VerticalAlignment="Center"
+                                                    Margin="8,0,1,0">
+                                            <Border Background="{Binding BadgeBrush}"
+                                                    CornerRadius="7"
+                                                    Padding="6,2"
+                                                    Margin="0,0,7,0"
+                                                    Visibility="{Binding BadgeVisibility}">
+                                                <TextBlock Text="{Binding BadgeText}"
+                                                           Foreground="#101318"
+                                                           FontSize="9"
+                                                           FontWeight="Bold"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           MaxWidth="104"/>
+                                            </Border>
+                                            <Ellipse Width="8"
+                                                     Height="8"
+                                                     VerticalAlignment="Center"
+                                                     Fill="{Binding StatusBrush}"/>
+                                        </StackPanel>
+                                    </Grid>
 
                                     <Grid Grid.Row="1">
                                         <Border x:Name="PreviewSurface"
                                                 Tag="{Binding}"
                                                 Height="108"
+                                                Focusable="True"
                                                 Background="#090B0E"
                                                 BorderBrush="#11151A"
                                                 BorderThickness="1"
@@ -130,7 +159,16 @@
                                                 ClipToBounds="True"
                                                 Loaded="PreviewSurface_Loaded"
                                                 Unloaded="PreviewSurface_Unloaded"
-                                                SizeChanged="PreviewSurface_SizeChanged"/>
+                                                SizeChanged="PreviewSurface_SizeChanged"
+                                                MouseLeftButtonDown="PreviewSurface_MouseLeftButtonDown"
+                                                MouseLeftButtonUp="PreviewSurface_MouseLeftButtonUp"
+                                                MouseRightButtonDown="PreviewSurface_MouseRightButtonDown"
+                                                MouseRightButtonUp="PreviewSurface_MouseRightButtonUp"
+                                                MouseMove="PreviewSurface_MouseMove"
+                                                MouseWheel="PreviewSurface_MouseWheel"
+                                                KeyDown="PreviewSurface_KeyDown"
+                                                KeyUp="PreviewSurface_KeyUp"
+                                                TextInput="PreviewSurface_TextInput"/>
 
                                         <Border Background="#99090B0E"
                                                 CornerRadius="5"

@@ -9,10 +9,24 @@ internal static class NativeMethods
 {
     internal const int WM_HOTKEY = 0x0312;
     internal const int WM_CLOSE = 0x0010;
+    internal const int WM_KEYDOWN = 0x0100;
+    internal const int WM_KEYUP = 0x0101;
+    internal const int WM_CHAR = 0x0102;
+    internal const int WM_MOUSEMOVE = 0x0200;
+    internal const int WM_LBUTTONDOWN = 0x0201;
+    internal const int WM_LBUTTONUP = 0x0202;
+    internal const int WM_RBUTTONDOWN = 0x0204;
+    internal const int WM_RBUTTONUP = 0x0205;
+    internal const int WM_MOUSEWHEEL = 0x020A;
 
     internal const int MOD_ALT = 0x0001;
     internal const int MOD_CONTROL = 0x0002;
     internal const int MOD_NOREPEAT = 0x4000;
+
+    internal const int MK_LBUTTON = 0x0001;
+    internal const int MK_RBUTTON = 0x0002;
+    internal const int MK_SHIFT = 0x0004;
+    internal const int MK_CONTROL = 0x0008;
 
     internal const int SW_RESTORE = 9;
     internal const int SW_SHOWNOACTIVATE = 4;
@@ -29,9 +43,14 @@ internal static class NativeMethods
     internal const int SM_CXVIRTUALSCREEN = 78;
     internal const int SM_CYVIRTUALSCREEN = 79;
 
+    internal const int SWP_NOSIZE = 0x0001;
+    internal const int SWP_NOMOVE = 0x0002;
     internal const int SWP_NOACTIVATE = 0x0010;
     internal const int SWP_SHOWWINDOW = 0x0040;
     internal const int SWP_NOOWNERZORDER = 0x0200;
+
+    internal const uint CWP_SKIPINVISIBLE = 0x0001;
+    internal const uint CWP_SKIPDISABLED = 0x0002;
 
     internal const int DWM_TNP_RECTDESTINATION = 0x00000001;
     internal const int DWM_TNP_OPACITY = 0x00000004;
@@ -39,6 +58,7 @@ internal static class NativeMethods
     internal const int DWM_TNP_SOURCECLIENTAREAONLY = 0x00000010;
 
     internal static readonly IntPtr HWND_TOPMOST = new(-1);
+    internal static readonly IntPtr HWND_NOTOPMOST = new(-2);
     internal static readonly IntPtr HWND_BOTTOM = new(1);
 
     private static readonly HashSet<string> BlockedWindowClasses = new(StringComparer.Ordinal)
@@ -130,6 +150,12 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr ChildWindowFromPointEx(IntPtr hwndParent, POINT pt, uint flags);
+
+    [DllImport("user32.dll")]
+    internal static extern int MapWindowPoints(IntPtr hWndFrom, IntPtr hWndTo, ref POINT lpPoints, uint cPoints);
 
     [DllImport("dwmapi.dll", SetLastError = true)]
     internal static extern int DwmRegisterThumbnail(IntPtr hwndDestination, IntPtr hwndSource, out IntPtr phThumbnailId);
@@ -257,6 +283,14 @@ internal static class NativeMethods
         var width = (int)Math.Round(bounds.Height * sourceRatio);
         var left = bounds.Left + ((bounds.Width - width) / 2);
         return new RECT(left, bounds.Top, left + width, bounds.Bottom);
+    }
+
+    internal static bool Intersects(RECT first, RECT second)
+    {
+        return first.Left < second.Right &&
+               first.Right > second.Left &&
+               first.Top < second.Bottom &&
+               first.Bottom > second.Top;
     }
 
     internal static void ThrowLastWin32Error(string operation)

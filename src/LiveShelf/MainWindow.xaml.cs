@@ -130,6 +130,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         QueueThumbnailRefresh();
     }
 
+    private void Window_MouseLeave(object sender, MouseEventArgs e)
+    {
+        if (_zoomedItem is { } item)
+        {
+            DeactivateZoom(item);
+            RunAfter(ZoomAnimationMs, () =>
+            {
+                if (!IsMouseOver && _peekedItem == item && _zoomedItem is null)
+                {
+                    ClearPeek();
+                }
+            });
+            return;
+        }
+
+        if (_peekedItem is not null)
+        {
+            _peekCollapseTimer.Stop();
+            _peekCollapseTimer.Start();
+        }
+    }
+
     private void Items_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         OnPropertyChanged(nameof(ItemCount));
@@ -224,6 +246,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (GetItemFromSender(sender) is { } item)
         {
+            if (item.IsInteractive)
+            {
+                return;
+            }
+
             ForgetPeek(item);
             _shelver?.Restore(item);
         }
@@ -241,6 +268,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (GetItemFromSender(sender) is { } item && item == _peekedItem)
         {
+            if (item == _zoomedItem)
+            {
+                return;
+            }
+
             _peekCollapseTimer.Stop();
             _peekCollapseTimer.Start();
         }
@@ -248,15 +280,27 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void Card_MouseWheel(object sender, MouseWheelEventArgs e)
     {
-        if ((Keyboard.Modifiers & ModifierKeys.Control) == 0 ||
-            GetItemFromSender(sender) is not { } item ||
-            item != _peekedItem)
+        if (GetItemFromSender(sender) is not { } item)
+        {
+            return;
+        }
+
+        if (item.IsInteractive)
+        {
+            ForwardWheelToSource(item, e);
+            return;
+        }
+
+        if ((Keyboard.Modifiers & ModifierKeys.Control) == 0 || item != _peekedItem)
         {
             return;
         }
 
         e.Handled = true;
-        ActivateZoom(item);
+        if (e.Delta > 0)
+        {
+            ActivateZoom(item);
+        }
     }
 
     private void Card_ManipulationStarting(object sender, ManipulationStartingEventArgs e)
@@ -279,7 +323,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         e.Handled = true;
-        ActivateZoom(item);
+        if (scaleDelta < 1 && item != _zoomedItem)
+        {
+            ActivateZoom(item);
+        }
     }
 
     private void RestoreMenuItem_Click(object sender, RoutedEventArgs e)
@@ -359,6 +406,133 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         QueueThumbnailRefresh();
     }
 
+    private void PreviewSurface_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item || !item.IsInteractive)
+        {
+            return;
+        }
+
+        preview.Focus();
+        preview.CaptureMouse();
+        ForwardMouseToSource(item, preview, NativeMethods.WM_LBUTTONDOWN, NativeMethods.MK_LBUTTON, e.GetPosition(preview));
+        e.Handled = true;
+    }
+
+    private void PreviewSurface_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item || !item.IsInteractive)
+        {
+            return;
+        }
+
+        ForwardMouseToSource(item, preview, NativeMethods.WM_LBUTTONUP, 0, e.GetPosition(preview));
+        preview.ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    private void PreviewSurface_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item || !item.IsInteractive)
+        {
+            return;
+        }
+
+        preview.Focus();
+        ForwardMouseToSource(item, preview, NativeMethods.WM_RBUTTONDOWN, NativeMethods.MK_RBUTTON, e.GetPosition(preview));
+        e.Handled = true;
+    }
+
+    private void PreviewSurface_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item || !item.IsInteractive)
+        {
+            return;
+        }
+
+        ForwardMouseToSource(item, preview, NativeMethods.WM_RBUTTONUP, 0, e.GetPosition(preview));
+        e.Handled = true;
+    }
+
+    private void PreviewSurface_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item || !item.IsInteractive)
+        {
+            return;
+        }
+
+        var keyState = 0;
+        if (e.LeftButton == MouseButtonState.Pressed)
+        {
+            keyState |= NativeMethods.MK_LBUTTON;
+        }
+
+        if (e.RightButton == MouseButtonState.Pressed)
+        {
+            keyState |= NativeMethods.MK_RBUTTON;
+        }
+
+        ForwardMouseToSource(item, preview, NativeMethods.WM_MOUSEMOVE, keyState, e.GetPosition(preview));
+    }
+
+    private void PreviewSurface_MouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item)
+        {
+            return;
+        }
+
+        if (item.IsInteractive)
+        {
+            ForwardWheelToSource(item, e, preview);
+            return;
+        }
+
+        if ((Keyboard.Modifiers & ModifierKeys.Control) != 0 && item == _peekedItem)
+        {
+            e.Handled = true;
+            if (e.Delta > 0)
+            {
+                ActivateZoom(item);
+            }
+
+            return;
+        }
+    }
+
+    private void PreviewSurface_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: ShelvedWindow item } && item.IsInteractive)
+        {
+            _shelver?.ForwardKeyInput(item, NativeMethods.WM_KEYDOWN, KeyInterop.VirtualKeyFromKey(e.Key == Key.System ? e.SystemKey : e.Key));
+            e.Handled = true;
+        }
+    }
+
+    private void PreviewSurface_KeyUp(object sender, KeyEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: ShelvedWindow item } && item.IsInteractive)
+        {
+            _shelver?.ForwardKeyInput(item, NativeMethods.WM_KEYUP, KeyInterop.VirtualKeyFromKey(e.Key == Key.System ? e.SystemKey : e.Key));
+            e.Handled = true;
+        }
+    }
+
+    private void PreviewSurface_TextInput(object sender, TextCompositionEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: ShelvedWindow item } || !item.IsInteractive)
+        {
+            return;
+        }
+
+        foreach (var character in e.Text)
+        {
+            _shelver?.ForwardCharInput(item, character);
+        }
+
+        e.Handled = true;
+    }
+
     private void PeekCollapseTimer_Tick(object? sender, EventArgs e)
     {
         _peekCollapseTimer.Stop();
@@ -414,6 +588,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         _peekedItem = item;
+        item.MarkAttentionSeen();
         item.IsExpanded = true;
         Panel.SetZIndex(card, 10);
         AnimateCardTransform(card, scale: 1.012, offsetX: -4, PeekAnimationMs);
@@ -433,7 +608,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         var item = _peekedItem;
         _peekedItem = null;
-        _zoomedItem = null;
         CollapsePeekedCard(item);
         StatusMessage = "Ready";
         PositionShelfWindow();
@@ -451,7 +625,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _peekedItem = null;
         if (_zoomedItem == item)
         {
+            _shelver?.EndInteractiveZoom(item);
             _zoomedItem = null;
+            item.IsZoomed = false;
         }
     }
 
@@ -459,10 +635,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (_zoomedItem == item)
         {
+            _shelver?.EndInteractiveZoom(item);
             _zoomedItem = null;
         }
 
         item.IsExpanded = false;
+        item.IsZoomed = false;
 
         if (_cardElements.TryGetValue(item, out var card))
         {
@@ -480,14 +658,78 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (_zoomedItem == item)
+        {
+            if (!item.IsInteractive)
+            {
+                _shelver?.BeginInteractiveZoom(item, default);
+                StatusMessage = $"Using {item.ProcessName}";
+            }
+
+            return;
+        }
+
         _zoomedItem = item;
+        item.IsZoomed = true;
+        item.MarkAttentionSeen();
+        _shelver?.BeginInteractiveZoom(item, default);
+        FocusPreview(item);
         AnimatePreviewHeight(item, ZoomPreviewHeight, ZoomAnimationMs);
         if (_cardElements.TryGetValue(item, out var card))
         {
             AnimateCardTransform(card, scale: 1.018, offsetX: -6, ZoomAnimationMs);
         }
 
-        StatusMessage = $"Zoomed {item.ProcessName}";
+        StatusMessage = $"Using {item.ProcessName}";
+        PositionShelfWindow();
+        QueueThumbnailRefresh();
+    }
+
+    private void DeactivateZoom(ShelvedWindow item)
+    {
+        if (_zoomedItem != item)
+        {
+            return;
+        }
+
+        _shelver?.EndInteractiveZoom(item);
+        _zoomedItem = null;
+        item.IsZoomed = false;
+        AnimatePreviewHeight(item, PeekPreviewHeight, ZoomAnimationMs);
+
+        if (_cardElements.TryGetValue(item, out var card))
+        {
+            AnimateCardTransform(card, scale: 1.012, offsetX: -4, ZoomAnimationMs);
+        }
+
+        StatusMessage = $"Peeking {item.ProcessName}";
+        PositionShelfWindow();
+        QueueThumbnailRefresh();
+    }
+
+    private void EnsurePeek(ShelvedWindow item)
+    {
+        if (_peekedItem == item)
+        {
+            return;
+        }
+
+        if (_peekedItem is not null)
+        {
+            CollapsePeekedCard(_peekedItem);
+        }
+
+        _peekedItem = item;
+        item.IsExpanded = true;
+        item.MarkAttentionSeen();
+
+        if (_cardElements.TryGetValue(item, out var card))
+        {
+            Panel.SetZIndex(card, 10);
+            AnimateCardTransform(card, scale: 1.012, offsetX: -4, PeekAnimationMs);
+        }
+
+        AnimatePreviewHeight(item, PeekPreviewHeight, PeekAnimationMs);
         PositionShelfWindow();
         QueueThumbnailRefresh();
     }
@@ -644,6 +886,80 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             _shelver.UpdateThumbnailDestination(item, destination);
         }
+    }
+
+    private void ForwardMouseToSource(
+        ShelvedWindow item,
+        FrameworkElement preview,
+        int message,
+        int keyState,
+        Point position)
+    {
+        _shelver?.ForwardMouseInput(
+            item,
+            message,
+            keyState | GetModifierKeyState(),
+            position.X,
+            position.Y,
+            preview.ActualWidth,
+            preview.ActualHeight);
+    }
+
+    private void ForwardWheelToSource(ShelvedWindow item, MouseWheelEventArgs e, FrameworkElement? preview = null)
+    {
+        preview ??= _previewElements.GetValueOrDefault(item);
+        if (preview is null)
+        {
+            return;
+        }
+
+        var position = e.GetPosition(preview);
+        var x = Math.Clamp(position.X, 0, Math.Max(0, preview.ActualWidth - 1));
+        var y = Math.Clamp(position.Y, 0, Math.Max(0, preview.ActualHeight - 1));
+        var screenPoint = preview.PointToScreen(new Point(x, y));
+
+        _shelver?.ForwardMouseInput(
+            item,
+            NativeMethods.WM_MOUSEWHEEL,
+            GetModifierKeyState(),
+            x,
+            y,
+            preview.ActualWidth,
+            preview.ActualHeight,
+            e.Delta,
+            screenPoint.X,
+            screenPoint.Y);
+        e.Handled = true;
+    }
+
+    private void FocusPreview(ShelvedWindow item)
+    {
+        if (!_previewElements.TryGetValue(item, out var preview))
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            preview.Focus();
+            Keyboard.Focus(preview);
+        }, DispatcherPriority.Input);
+    }
+
+    private static int GetModifierKeyState()
+    {
+        var state = 0;
+        if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0)
+        {
+            state |= NativeMethods.MK_SHIFT;
+        }
+
+        if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
+        {
+            state |= NativeMethods.MK_CONTROL;
+        }
+
+        return state;
     }
 
     private void PositionShelfWindow(bool animate = true)
