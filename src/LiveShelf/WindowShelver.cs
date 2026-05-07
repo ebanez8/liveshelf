@@ -89,6 +89,10 @@ internal sealed class WindowShelver
         var title = NativeMethods.GetWindowTitle(sourceHwnd);
         var processName = NativeMethods.GetProcessName(sourceHwnd);
         var processId = NativeMethods.GetProcessId(sourceHwnd);
+        if (IsBlockedShelvingProcess(processName))
+        {
+            throw new InvalidOperationException($"{FormatProcessDisplayName(processName, processName)} cannot be shelved");
+        }
 
         var registerResult = NativeMethods.DwmRegisterThumbnail(_shelfHwnd, sourceHwnd, out var thumbnailHandle);
         NativeMethods.ThrowForHResult("DwmRegisterThumbnail", registerResult);
@@ -273,12 +277,41 @@ internal sealed class WindowShelver
         }
 
         item.IsInteractive = true;
+        item.IsPreparingInteractive = false;
         if (screenBounds.Width > 0 && screenBounds.Height > 0)
         {
             PositionInteractiveSource(item, screenBounds);
         }
 
         ThumbnailRefreshRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    public void PrepareInteractiveZoom(ShelvedWindow item, NativeMethods.RECT screenBounds)
+    {
+        if (!_items.Contains(item) ||
+            item.IsInteractive ||
+            !item.IsSourceAlive ||
+            !NativeMethods.IsWindow(item.SourceHwnd) ||
+            screenBounds.Width <= 0 ||
+            screenBounds.Height <= 0)
+        {
+            return;
+        }
+
+        var isFirstPrepare = !item.IsPreparingInteractive;
+        item.IsPreparingInteractive = true;
+        PositionPreparedSource(item, screenBounds, isFirstPrepare);
+    }
+
+    public void CancelInteractivePreparation(ShelvedWindow item)
+    {
+        if (!item.IsPreparingInteractive || item.IsInteractive)
+        {
+            return;
+        }
+
+        item.IsPreparingInteractive = false;
+        ParkInteractiveSource(item);
     }
 
     public void UpdateInteractiveZoomBounds(ShelvedWindow item, NativeMethods.RECT screenBounds)
@@ -293,12 +326,13 @@ internal sealed class WindowShelver
 
     public void EndInteractiveZoom(ShelvedWindow item)
     {
-        if (!item.IsInteractive)
+        if (!item.IsInteractive && !item.IsPreparingInteractive)
         {
             return;
         }
 
         item.IsInteractive = false;
+        item.IsPreparingInteractive = false;
         ParkInteractiveSource(item);
         ThumbnailRefreshRequested?.Invoke(this, EventArgs.Empty);
     }
@@ -394,7 +428,7 @@ internal sealed class WindowShelver
     {
         var parkedRect = GetParkedSourceRect(currentRect);
 
-        NativeMethods.ShowWindow(sourceHwnd, NativeMethods.SW_SHOWNOACTIVATE);
+        NativeMethods.ShowWindow(sourceHwnd, NativeMethods.SW_RESTORE);
 
         NativeMethods.SetWindowPos(
             sourceHwnd,
@@ -443,7 +477,7 @@ internal sealed class WindowShelver
         }
 
         item.InteractiveBounds = screenBounds;
-        NativeMethods.ShowWindow(item.SourceHwnd, NativeMethods.SW_SHOWNORMAL);
+        NativeMethods.ShowWindow(item.SourceHwnd, NativeMethods.SW_RESTORE);
         NativeMethods.SetWindowPos(
             item.SourceHwnd,
             NativeMethods.HWND_TOPMOST,
@@ -454,6 +488,34 @@ internal sealed class WindowShelver
             NativeMethods.SWP_SHOWWINDOW);
         NativeMethods.SetForegroundWindow(item.SourceHwnd);
         NativeMethods.SetFocus(item.SourceHwnd);
+    }
+
+    private static void PositionPreparedSource(
+        ShelvedWindow item,
+        NativeMethods.RECT screenBounds,
+        bool restoreWindow)
+    {
+        if (screenBounds.Width <= 0 || screenBounds.Height <= 0)
+        {
+            return;
+        }
+
+        var parkedBounds = item.ParkedBounds.Width > 0 && item.ParkedBounds.Height > 0
+            ? item.ParkedBounds
+            : GetParkedSourceRect(item.OriginalPlacement.NormalPosition);
+
+        item.InteractiveBounds = screenBounds;
+        NativeMethods.ShowWindow(
+            item.SourceHwnd,
+            restoreWindow ? NativeMethods.SW_RESTORE : NativeMethods.SW_SHOWNOACTIVATE);
+        NativeMethods.SetWindowPos(
+            item.SourceHwnd,
+            NativeMethods.HWND_BOTTOM,
+            parkedBounds.Left,
+            parkedBounds.Top,
+            screenBounds.Width,
+            screenBounds.Height,
+            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER | NativeMethods.SWP_SHOWWINDOW);
     }
 
     private static void ParkInteractiveSource(ShelvedWindow item)
@@ -470,6 +532,7 @@ internal sealed class WindowShelver
             parkedBounds.Width,
             parkedBounds.Height,
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER | NativeMethods.SWP_SHOWWINDOW);
+        item.IsPreparingInteractive = false;
         item.InteractiveBounds = default;
     }
 
@@ -1902,6 +1965,12 @@ internal sealed class WindowShelver
                processName.Contains("tabby", StringComparison.OrdinalIgnoreCase) ||
                processName.Contains("hyper", StringComparison.OrdinalIgnoreCase) ||
                processName.Contains("ghostty", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsBlockedShelvingProcess(string processName)
+    {
+        return processName.Equals("spotify", StringComparison.OrdinalIgnoreCase) ||
+               processName.Contains("spotify", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsBrowserProcess(string processName)

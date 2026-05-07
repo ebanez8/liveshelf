@@ -49,6 +49,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly Dictionary<ShelvedWindow, FrameworkElement> _previewElements = [];
     private readonly DispatcherTimer _peekCollapseTimer;
     private readonly DispatcherTimer _interactiveExitTimer;
+    private ShelvedWindow? _pendingInteractiveItem;
     private HwndSource? _source;
     private IntPtr _windowHandle;
     private WindowShelver? _shelver;
@@ -652,6 +653,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        var bounds = GetPreviewScreenBounds(item);
+        if (bounds.Width > 0 && bounds.Height > 0)
+        {
+            _shelver?.UpdateInteractiveZoomBounds(item, bounds);
+        }
+
         if (DateTime.UtcNow < _interactiveExitSuppressedUntilUtc)
         {
             return;
@@ -842,8 +849,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void ScheduleInteractiveActivation(ShelvedWindow item)
     {
         var generation = ++_interactiveActivationGeneration;
+        _pendingInteractiveItem = item;
         _interactiveExitSuppressedUntilUtc = DateTime.UtcNow.AddMilliseconds(InteractiveActivationDelayMs + 1200);
         StatusMessage = $"Zooming {item.ProcessName}";
+        RefreshThumbnailsDuring(InteractiveActivationDelayMs + 80);
 
         RunAfter(InteractiveActivationDelayMs, () =>
         {
@@ -857,6 +866,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
 
             _shelver?.BeginInteractiveZoom(item, GetPreviewScreenBounds(item));
+            _pendingInteractiveItem = null;
             _interactiveExitTimer.Start();
             StatusMessage = $"Using {item.ProcessName}";
             QueueThumbnailRefresh();
@@ -866,6 +876,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void CancelPendingInteractiveActivation()
     {
         _interactiveActivationGeneration++;
+        if (_pendingInteractiveItem is { } item)
+        {
+            _shelver?.CancelInteractivePreparation(item);
+        }
+
+        _pendingInteractiveItem = null;
     }
 
     private void EnsurePeek(ShelvedWindow item)
@@ -1022,6 +1038,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
 
             _shelver.UpdateThumbnailDestination(item, thumbnailDestination);
+            if (_pendingInteractiveItem == item && !item.IsInteractive)
+            {
+                _shelver.PrepareInteractiveZoom(item, screenBounds);
+            }
+
             if (item.IsInteractive)
             {
                 _shelver.UpdateInteractiveZoomBounds(item, screenBounds);

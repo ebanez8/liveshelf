@@ -74,6 +74,8 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
     internal NativeMethods.RECT InteractiveBounds { get; set; }
 
+    internal bool IsPreparingInteractive { get; set; }
+
     internal string MediaSessionId => _mediaSessionId;
 
     public string ProcessName { get; }
