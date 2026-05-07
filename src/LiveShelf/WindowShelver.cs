@@ -104,7 +104,7 @@ internal sealed class WindowShelver
         try
         {
             ShelvedWindowRegistry.AddOrUpdate(item);
-            ParkSourceWindow(sourceHwnd, currentRect);
+            item.ParkedBounds = ParkSourceWindow(sourceHwnd, currentRect);
             _items.Add(item);
             _agentSessions.TryAutoLinkCard(item);
             _mediaSessionService.RefreshSoon();
@@ -253,8 +253,8 @@ internal sealed class WindowShelver
                 NativeMethods.DWM_TNP_OPACITY |
                 NativeMethods.DWM_TNP_SOURCECLIENTAREAONLY,
             rcDestination = destination,
-            opacity = _thumbnailsVisible ? (byte)255 : (byte)0,
-            fVisible = _thumbnailsVisible,
+            opacity = _thumbnailsVisible && !item.IsInteractive ? (byte)255 : (byte)0,
+            fVisible = _thumbnailsVisible && !item.IsInteractive,
             fSourceClientAreaOnly = false
         };
 
@@ -273,11 +273,22 @@ internal sealed class WindowShelver
         }
 
         item.IsInteractive = true;
+        if (screenBounds.Width > 0 && screenBounds.Height > 0)
+        {
+            PositionInteractiveSource(item, screenBounds);
+        }
+
+        ThumbnailRefreshRequested?.Invoke(this, EventArgs.Empty);
     }
 
     public void UpdateInteractiveZoomBounds(ShelvedWindow item, NativeMethods.RECT screenBounds)
     {
-        return;
+        if (!CanForwardInput(item) || screenBounds.Width <= 0 || screenBounds.Height <= 0)
+        {
+            return;
+        }
+
+        PositionInteractiveSource(item, screenBounds);
     }
 
     public void EndInteractiveZoom(ShelvedWindow item)
@@ -288,6 +299,8 @@ internal sealed class WindowShelver
         }
 
         item.IsInteractive = false;
+        ParkInteractiveSource(item);
+        ThumbnailRefreshRequested?.Invoke(this, EventArgs.Empty);
     }
 
     public void ForwardMouseInput(
@@ -307,19 +320,29 @@ internal sealed class WindowShelver
             return;
         }
 
-        if (!TryMapPreviewPointToSource(item, x, y, previewWidth, previewHeight, out var sourceX, out var sourceY))
+        if (!TryMapPreviewPointToSourceClient(
+                item,
+                x,
+                y,
+                previewWidth,
+                previewHeight,
+                out var sourceClientX,
+                out var sourceClientY,
+                out var sourceScreenX,
+                out var sourceScreenY))
         {
             return;
         }
 
-        var target = GetInputTarget(item, sourceX, sourceY, out var targetX, out var targetY);
+        var target = GetInputTarget(item, sourceClientX, sourceClientY, out var targetX, out var targetY);
         item.LastInputTargetHwnd = target;
+        PrepareSourceForInput(item, target);
 
         var wParam = message == NativeMethods.WM_MOUSEWHEEL
             ? MakeWheelWParam(keyState, wheelDelta)
             : new IntPtr(keyState);
         var lParam = message == NativeMethods.WM_MOUSEWHEEL
-            ? MakeLParam((int)Math.Round(screenX), (int)Math.Round(screenY))
+            ? MakeLParam(sourceScreenX, sourceScreenY)
             : MakeLParam(targetX, targetY);
 
         NativeMethods.PostMessageW(target, (uint)message, wParam, lParam);
@@ -332,7 +355,9 @@ internal sealed class WindowShelver
             return;
         }
 
-        NativeMethods.PostMessageW(GetKeyboardTarget(item), (uint)message, new IntPtr(virtualKey), IntPtr.Zero);
+        var target = GetKeyboardTarget(item);
+        PrepareSourceForInput(item, target);
+        NativeMethods.PostMessageW(target, (uint)message, new IntPtr(virtualKey), IntPtr.Zero);
     }
 
     public void ForwardCharInput(ShelvedWindow item, char character)
@@ -342,7 +367,9 @@ internal sealed class WindowShelver
             return;
         }
 
-        NativeMethods.PostMessageW(GetKeyboardTarget(item), NativeMethods.WM_CHAR, new IntPtr(character), IntPtr.Zero);
+        var target = GetKeyboardTarget(item);
+        PrepareSourceForInput(item, target);
+        NativeMethods.PostMessageW(target, NativeMethods.WM_CHAR, new IntPtr(character), IntPtr.Zero);
     }
 
     private static void UpdateThumbnailVisibility(ShelvedWindow item, bool visible)
@@ -352,6 +379,7 @@ internal sealed class WindowShelver
             return;
         }
 
+        visible &= !item.IsInteractive;
         var properties = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
         {
             dwFlags = NativeMethods.DWM_TNP_VISIBLE | NativeMethods.DWM_TNP_OPACITY,
@@ -362,13 +390,9 @@ internal sealed class WindowShelver
         NativeMethods.DwmUpdateThumbnailProperties(item.ThumbnailHandle, ref properties);
     }
 
-    private static void ParkSourceWindow(IntPtr sourceHwnd, NativeMethods.RECT currentRect)
+    private static NativeMethods.RECT ParkSourceWindow(IntPtr sourceHwnd, NativeMethods.RECT currentRect)
     {
-        var virtualScreen = NativeMethods.GetVirtualScreenRect();
-        var width = Math.Max(currentRect.Width, 320);
-        var height = Math.Max(currentRect.Height, 240);
-        var parkedX = virtualScreen.Right + 96;
-        var parkedY = virtualScreen.Top + 96;
+        var parkedRect = GetParkedSourceRect(currentRect);
 
         NativeMethods.ShowWindow(sourceHwnd, NativeMethods.SW_SHOWNOACTIVATE);
 
@@ -384,14 +408,69 @@ internal sealed class WindowShelver
         if (!NativeMethods.SetWindowPos(
                 sourceHwnd,
                 NativeMethods.HWND_BOTTOM,
-                parkedX,
-                parkedY,
-                width,
-                height,
+                parkedRect.Left,
+                parkedRect.Top,
+                parkedRect.Width,
+                parkedRect.Height,
                 NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER | NativeMethods.SWP_SHOWWINDOW))
         {
             NativeMethods.ThrowLastWin32Error("SetWindowPos");
         }
+
+        return parkedRect;
+    }
+
+    private static NativeMethods.RECT GetParkedSourceRect(NativeMethods.RECT currentRect)
+    {
+        var virtualScreen = NativeMethods.GetVirtualScreenRect();
+        var width = Math.Max(currentRect.Width, 320);
+        var height = Math.Max(currentRect.Height, 240);
+        var parkedX = virtualScreen.Right + 96;
+        var parkedY = virtualScreen.Top + 96;
+
+        return new NativeMethods.RECT(
+            parkedX,
+            parkedY,
+            parkedX + width,
+            parkedY + height);
+    }
+
+    private static void PositionInteractiveSource(ShelvedWindow item, NativeMethods.RECT screenBounds)
+    {
+        if (screenBounds.Width <= 0 || screenBounds.Height <= 0)
+        {
+            return;
+        }
+
+        item.InteractiveBounds = screenBounds;
+        NativeMethods.ShowWindow(item.SourceHwnd, NativeMethods.SW_SHOWNORMAL);
+        NativeMethods.SetWindowPos(
+            item.SourceHwnd,
+            NativeMethods.HWND_TOPMOST,
+            screenBounds.Left,
+            screenBounds.Top,
+            screenBounds.Width,
+            screenBounds.Height,
+            NativeMethods.SWP_SHOWWINDOW);
+        NativeMethods.SetForegroundWindow(item.SourceHwnd);
+        NativeMethods.SetFocus(item.SourceHwnd);
+    }
+
+    private static void ParkInteractiveSource(ShelvedWindow item)
+    {
+        var parkedBounds = item.ParkedBounds.Width > 0 && item.ParkedBounds.Height > 0
+            ? item.ParkedBounds
+            : GetParkedSourceRect(item.OriginalPlacement.NormalPosition);
+
+        NativeMethods.SetWindowPos(
+            item.SourceHwnd,
+            NativeMethods.HWND_NOTOPMOST,
+            parkedBounds.Left,
+            parkedBounds.Top,
+            parkedBounds.Width,
+            parkedBounds.Height,
+            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER | NativeMethods.SWP_SHOWWINDOW);
+        item.InteractiveBounds = default;
     }
 
     private void RestoreForShutdown(ShelvedWindow item)
@@ -1923,17 +2002,27 @@ internal sealed class WindowShelver
             : item.SourceHwnd;
     }
 
-    private static bool TryMapPreviewPointToSource(
+    private static void PrepareSourceForInput(ShelvedWindow item, IntPtr target)
+    {
+        NativeMethods.SetForegroundWindow(item.SourceHwnd);
+        NativeMethods.SetFocus(target == IntPtr.Zero ? item.SourceHwnd : target);
+    }
+
+    private static bool TryMapPreviewPointToSourceClient(
         ShelvedWindow item,
         double x,
         double y,
         double previewWidth,
         double previewHeight,
-        out int sourceX,
-        out int sourceY)
+        out int sourceClientX,
+        out int sourceClientY,
+        out int sourceScreenX,
+        out int sourceScreenY)
     {
-        sourceX = 0;
-        sourceY = 0;
+        sourceClientX = 0;
+        sourceClientY = 0;
+        sourceScreenX = 0;
+        sourceScreenY = 0;
 
         var sourceSize = new NativeMethods.SIZE
         {
@@ -1974,8 +2063,57 @@ internal sealed class WindowShelver
             return false;
         }
 
-        sourceX = Math.Clamp((int)Math.Round(((x - fittedLeft) / fittedWidth) * sourceSize.Width), 0, sourceSize.Width - 1);
-        sourceY = Math.Clamp((int)Math.Round(((y - fittedTop) / fittedHeight) * sourceSize.Height), 0, sourceSize.Height - 1);
+        var sourceWindowX = Math.Clamp((int)Math.Round(((x - fittedLeft) / fittedWidth) * sourceSize.Width), 0, sourceSize.Width - 1);
+        var sourceWindowY = Math.Clamp((int)Math.Round(((y - fittedTop) / fittedHeight) * sourceSize.Height), 0, sourceSize.Height - 1);
+
+        if (!TryConvertWindowPointToClientPoint(
+                item.SourceHwnd,
+                sourceWindowX,
+                sourceWindowY,
+                out sourceClientX,
+                out sourceClientY,
+                out sourceScreenX,
+                out sourceScreenY))
+        {
+            sourceClientX = sourceWindowX;
+            sourceClientY = sourceWindowY;
+            sourceScreenX = sourceWindowX;
+            sourceScreenY = sourceWindowY;
+        }
+
+        return true;
+    }
+
+    private static bool TryConvertWindowPointToClientPoint(
+        IntPtr hwnd,
+        int windowX,
+        int windowY,
+        out int clientX,
+        out int clientY,
+        out int screenX,
+        out int screenY)
+    {
+        clientX = windowX;
+        clientY = windowY;
+        screenX = windowX;
+        screenY = windowY;
+
+        if (!NativeMethods.GetWindowRect(hwnd, out var windowRect) ||
+            !NativeMethods.GetClientRect(hwnd, out var clientRect))
+        {
+            return false;
+        }
+
+        var clientOrigin = new NativeMethods.POINT();
+        if (!NativeMethods.ClientToScreen(hwnd, ref clientOrigin))
+        {
+            return false;
+        }
+
+        screenX = windowRect.Left + windowX;
+        screenY = windowRect.Top + windowY;
+        clientX = Math.Clamp(screenX - clientOrigin.X, 0, Math.Max(0, clientRect.Width - 1));
+        clientY = Math.Clamp(screenY - clientOrigin.Y, 0, Math.Max(0, clientRect.Height - 1));
         return true;
     }
 

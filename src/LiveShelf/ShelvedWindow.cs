@@ -70,6 +70,10 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
     internal IntPtr LastInputTargetHwnd { get; set; }
 
+    internal NativeMethods.RECT ParkedBounds { get; set; }
+
+    internal NativeMethods.RECT InteractiveBounds { get; set; }
+
     internal string MediaSessionId => _mediaSessionId;
 
     public string ProcessName { get; }

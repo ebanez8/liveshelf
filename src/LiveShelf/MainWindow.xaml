@@ -49,6 +49,51 @@
 
         <Style x:Key="MenuItemStyle" TargetType="{x:Type MenuItem}">
             <Setter Property="Padding" Value="12,7"/>
+            <Setter Property="Foreground" Value="#EEF2F7"/>
+            <Setter Property="Background" Value="#20252D"/>
+        </Style>
+
+        <Style x:Key="HeaderActionButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Height" Value="24"/>
+            <Setter Property="Padding" Value="7,0"/>
+            <Setter Property="Background" Value="#252C35"/>
+            <Setter Property="BorderBrush" Value="#3E4856"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Foreground" Value="#EEF2F7"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonSurface"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonSurface" Property="Background" Value="#303946"/>
+                                <Setter TargetName="ButtonSurface" Property="BorderBrush" Value="#5F6D80"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonSurface" Property="Background" Value="#1E252D"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="AgentContextMenuStyle" TargetType="{x:Type ContextMenu}">
+            <Setter Property="Background" Value="#20252D"/>
+            <Setter Property="BorderBrush" Value="#3E4856"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Foreground" Value="#EEF2F7"/>
         </Style>
     </Window.Resources>
 
@@ -81,26 +126,33 @@
                                VerticalAlignment="Center"/>
                 </Border>
                 <Button DockPanel.Dock="Right"
-                        Content="Agents"
-                        Height="22"
                         Margin="0,0,8,0"
-                        Padding="8,0"
-                        Background="#2A3039"
-                        BorderBrush="#465061"
-                        Foreground="#EEF2F7"
-                        FontSize="10"
-                        FontWeight="SemiBold"
+                        Style="{StaticResource HeaderActionButtonStyle}"
+                        ToolTip="Connect Codex or Claude Code hooks"
                         Click="AgentsButton_Click">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border Background="#5FDCD5"
+                                CornerRadius="4"
+                                Padding="4,1"
+                                Margin="0,0,6,0">
+                            <TextBlock Text="AI"
+                                       Foreground="#101318"
+                                       FontSize="9"
+                                       FontWeight="Bold"/>
+                        </Border>
+                        <TextBlock Text="Connect"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
                     <Button.ContextMenu>
-                        <ContextMenu>
-                            <MenuItem Header="Enable Codex Tracking"
+                        <ContextMenu Style="{StaticResource AgentContextMenuStyle}">
+                            <MenuItem Header="Connect Codex"
                                       Style="{StaticResource MenuItemStyle}"
                                       Click="EnableCodexTrackingMenuItem_Click"/>
-                            <MenuItem Header="Enable Claude Tracking"
+                            <MenuItem Header="Connect Claude Code"
                                       Style="{StaticResource MenuItemStyle}"
                                       Click="EnableClaudeTrackingMenuItem_Click"/>
                             <Separator/>
-                            <MenuItem Header="Enable Codex and Claude"
+                            <MenuItem Header="Connect Codex and Claude"
                                       Style="{StaticResource MenuItemStyle}"
                                       Click="EnableAllAgentTrackingMenuItem_Click"/>
                         </ContextMenu>

@@ -43,12 +43,23 @@ public partial class App : Application
     private static void TaskScheduler_UnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
     {
         CrashLogger.Log(e.Exception);
-        if (Current.MainWindow is MainWindow window)
+        e.SetObserved();
+
+        var app = Current;
+        if (app is null)
         {
-            window.RestoreShelvedWindowsForShutdown();
+            ShelvedWindowRegistry.RestoreRegisteredWindows();
+            return;
         }
 
-        e.SetObserved();
+        app.Dispatcher.BeginInvoke(() =>
+        {
+            if (app.MainWindow is MainWindow window)
+            {
+                window.ReportRuntimeError(e.Exception);
+                window.RestoreShelvedWindowsForShutdown();
+            }
+        });
     }
 
     protected override void OnExit(ExitEventArgs e)

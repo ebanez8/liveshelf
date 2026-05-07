@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Windows.Threading;
 using Windows.Media.Control;
 
@@ -51,6 +52,11 @@ internal sealed class MediaSessionService : IDisposable
             var playbackInfo = session.GetPlaybackInfo();
             var controls = playbackInfo.Controls;
 
+            if (controls is null)
+            {
+                return;
+            }
+
             if (controls.IsPlayPauseToggleEnabled)
             {
                 await session.TryTogglePlayPauseAsync();
@@ -67,7 +73,7 @@ internal sealed class MediaSessionService : IDisposable
 
             QueueRefresh();
         }
-        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+        catch (Exception ex) when (IsRecoverableMediaException(ex))
         {
         }
     }
@@ -106,7 +112,7 @@ internal sealed class MediaSessionService : IDisposable
             _timelineTimer.Start();
             await RefreshSessionsAsync();
         }
-        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+        catch (Exception ex) when (IsRecoverableMediaException(ex))
         {
         }
     }
@@ -194,12 +200,20 @@ internal sealed class MediaSessionService : IDisposable
             {
                 currentSessions = _manager.GetSessions();
             }
-            catch (InvalidOperationException)
+            catch (Exception ex) when (IsRecoverableMediaException(ex))
             {
                 return;
             }
 
-            var currentSession = _manager.GetCurrentSession();
+            GlobalSystemMediaTransportControlsSession? currentSession;
+            try
+            {
+                currentSession = _manager.GetCurrentSession();
+            }
+            catch (Exception ex) when (IsRecoverableMediaException(ex))
+            {
+                currentSession = null;
+            }
             var activeIds = new HashSet<string>(StringComparer.Ordinal);
             var snapshots = new List<MediaSessionSnapshot>();
 
@@ -233,6 +247,9 @@ internal sealed class MediaSessionService : IDisposable
 
             SessionsChanged?.Invoke(this, snapshots);
         }
+        catch (Exception ex) when (IsRecoverableMediaException(ex))
+        {
+        }
         finally
         {
             _isRefreshing = false;
@@ -255,6 +272,10 @@ internal sealed class MediaSessionService : IDisposable
             var timeline = session.GetTimelineProperties();
             var properties = await session.TryGetMediaPropertiesAsync();
             var controls = playbackInfo.Controls;
+            if (controls is null)
+            {
+                return null;
+            }
 
             var playbackStatus = playbackInfo.PlaybackStatus;
             var title = NormalizeWhitespace(properties.Title);
@@ -264,7 +285,7 @@ internal sealed class MediaSessionService : IDisposable
             var sourceDisplayName = FormatSourceAppName(sourceAppUserModelId);
             var start = timeline.StartTime;
             var end = timeline.EndTime;
-            var position = EstimatePosition(timeline, playbackStatus);
+            var position = GetReportedPosition(timeline);
             var duration = end > start ? end - start : TimeSpan.Zero;
             var elapsed = duration > TimeSpan.Zero ? position - start : position;
 
@@ -302,29 +323,24 @@ internal sealed class MediaSessionService : IDisposable
                 controls.IsPreviousEnabled,
                 controls.IsNextEnabled);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+        catch (Exception ex) when (IsRecoverableMediaException(ex))
         {
             return null;
         }
     }
 
-    private static TimeSpan EstimatePosition(
-        GlobalSystemMediaTransportControlsSessionTimelineProperties timeline,
-        GlobalSystemMediaTransportControlsSessionPlaybackStatus playbackStatus)
+    private static bool IsRecoverableMediaException(Exception ex)
     {
-        var position = timeline.Position;
-        if (playbackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
-        {
-            return position;
-        }
+        return ex is InvalidOperationException or
+            UnauthorizedAccessException or
+            COMException or
+            NullReferenceException;
+    }
 
-        var elapsedSinceUpdate = DateTimeOffset.UtcNow - timeline.LastUpdatedTime;
-        if (elapsedSinceUpdate <= TimeSpan.Zero || elapsedSinceUpdate > TimeSpan.FromMinutes(10))
-        {
-            return position;
-        }
-
-        return position + elapsedSinceUpdate;
+    private static TimeSpan GetReportedPosition(
+        GlobalSystemMediaTransportControlsSessionTimelineProperties timeline)
+    {
+        return timeline.Position;
     }
 
     private static string GetSessionId(GlobalSystemMediaTransportControlsSession session)

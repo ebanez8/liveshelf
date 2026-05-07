@@ -27,15 +27,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private const double ShelfWidth = 264;
     private const double PeekShelfWidth = 440;
-    private const double ZoomShelfWidth = 620;
+    private const double ZoomShelfWidth = 780;
     private const double HiddenOffset = 18;
     private const double CollapsedPreviewHeight = 108;
     private const double PeekPreviewHeight = 248;
-    private const double ZoomPreviewHeight = 390;
+    private const double ZoomPreviewHeight = 560;
     private const int CardEntryAnimationMs = 340;
     private const int ShelfAnimationMs = 560;
     private const int PeekAnimationMs = 500;
     private const int ZoomAnimationMs = 520;
+    private const int InteractiveActivationDelayMs = 500;
     private const int AttentionAnimationMs = 720;
 
     private static readonly Color CardBackgroundColor = Color.FromRgb(32, 37, 45);
@@ -47,6 +48,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly Dictionary<ShelvedWindow, FrameworkElement> _cardElements = [];
     private readonly Dictionary<ShelvedWindow, FrameworkElement> _previewElements = [];
     private readonly DispatcherTimer _peekCollapseTimer;
+    private readonly DispatcherTimer _interactiveExitTimer;
     private HwndSource? _source;
     private IntPtr _windowHandle;
     private WindowShelver? _shelver;
@@ -57,7 +59,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _isShelfHidden;
     private bool _hasRestoredShelvedWindowsForShutdown;
     private DateTime _thumbnailAnimationRefreshUntilUtc;
+    private DateTime _interactiveExitSuppressedUntilUtc;
     private int _shelfAnimationGeneration;
+    private int _interactiveActivationGeneration;
     private string _statusMessage = "Ready";
 
     public MainWindow()
@@ -71,6 +75,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Interval = TimeSpan.FromMilliseconds(260)
         };
         _peekCollapseTimer.Tick += PeekCollapseTimer_Tick;
+
+        _interactiveExitTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(220)
+        };
+        _interactiveExitTimer.Tick += InteractiveExitTimer_Tick;
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -151,6 +161,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (_zoomedItem is { } item)
         {
+            if (item.IsInteractive)
+            {
+                return;
+            }
+
             DeactivateZoom(item);
             RunAfter(ZoomAnimationMs, () =>
             {
@@ -474,7 +489,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (sender is FrameworkElement element && element.Tag is ShelvedWindow item)
         {
             _previewElements[item] = element;
-            element.Height = item.IsExpanded ? PeekPreviewHeight : CollapsedPreviewHeight;
+            element.Height = item.IsZoomed
+                ? GetZoomPreviewHeight()
+                : item.IsExpanded
+                    ? PeekPreviewHeight
+                    : CollapsedPreviewHeight;
             QueueThumbnailRefresh();
         }
     }
@@ -625,6 +644,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ClearPeek();
     }
 
+    private void InteractiveExitTimer_Tick(object? sender, EventArgs e)
+    {
+        if (_zoomedItem is not { IsInteractive: true } item)
+        {
+            _interactiveExitTimer.Stop();
+            return;
+        }
+
+        if (DateTime.UtcNow < _interactiveExitSuppressedUntilUtc)
+        {
+            return;
+        }
+
+        if (IsMouseOver || IsCursorInsidePreviewBounds(item))
+        {
+            return;
+        }
+
+        DeactivateZoom(item);
+        ClearPeek();
+    }
+
     private void ToggleShelfVisibility()
     {
         SetShelfHidden(!_isShelfHidden);
@@ -711,9 +752,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _peekedItem = null;
         if (_zoomedItem == item)
         {
+            CancelPendingInteractiveActivation();
             _shelver?.EndInteractiveZoom(item);
             _zoomedItem = null;
             item.IsZoomed = false;
+            _interactiveExitTimer.Stop();
         }
     }
 
@@ -721,8 +764,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (_zoomedItem == item)
         {
+            CancelPendingInteractiveActivation();
             _shelver?.EndInteractiveZoom(item);
             _zoomedItem = null;
+            _interactiveExitTimer.Stop();
         }
 
         item.IsExpanded = false;
@@ -748,8 +793,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             if (!item.IsInteractive)
             {
-                _shelver?.BeginInteractiveZoom(item, default);
-                StatusMessage = $"Using {item.ProcessName}";
+                ScheduleInteractiveActivation(item);
             }
 
             return;
@@ -758,15 +802,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _zoomedItem = item;
         item.IsZoomed = true;
         item.MarkAttentionSeen();
-        _shelver?.BeginInteractiveZoom(item, default);
+        ScheduleInteractiveActivation(item);
         FocusPreview(item);
-        AnimatePreviewHeight(item, ZoomPreviewHeight, ZoomAnimationMs);
+        AnimatePreviewHeight(item, GetZoomPreviewHeight(), ZoomAnimationMs);
         if (_cardElements.TryGetValue(item, out var card))
         {
             AnimateCardTransform(card, scale: 1.018, offsetX: -6, ZoomAnimationMs);
         }
 
-        StatusMessage = $"Using {item.ProcessName}";
+        StatusMessage = $"Zooming {item.ProcessName}";
         PositionShelfWindow();
         QueueThumbnailRefresh();
     }
@@ -778,9 +822,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        CancelPendingInteractiveActivation();
         _shelver?.EndInteractiveZoom(item);
         _zoomedItem = null;
         item.IsZoomed = false;
+        _interactiveExitTimer.Stop();
         AnimatePreviewHeight(item, PeekPreviewHeight, ZoomAnimationMs);
 
         if (_cardElements.TryGetValue(item, out var card))
@@ -791,6 +837,35 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         StatusMessage = $"Peeking {item.ProcessName}";
         PositionShelfWindow();
         QueueThumbnailRefresh();
+    }
+
+    private void ScheduleInteractiveActivation(ShelvedWindow item)
+    {
+        var generation = ++_interactiveActivationGeneration;
+        _interactiveExitSuppressedUntilUtc = DateTime.UtcNow.AddMilliseconds(InteractiveActivationDelayMs + 1200);
+        StatusMessage = $"Zooming {item.ProcessName}";
+
+        RunAfter(InteractiveActivationDelayMs, () =>
+        {
+            if (generation != _interactiveActivationGeneration ||
+                _zoomedItem != item ||
+                !item.IsZoomed ||
+                item.IsInteractive ||
+                !item.IsSourceAlive)
+            {
+                return;
+            }
+
+            _shelver?.BeginInteractiveZoom(item, GetPreviewScreenBounds(item));
+            _interactiveExitTimer.Start();
+            StatusMessage = $"Using {item.ProcessName}";
+            QueueThumbnailRefresh();
+        });
+    }
+
+    private void CancelPendingInteractiveActivation()
+    {
+        _interactiveActivationGeneration++;
     }
 
     private void EnsurePeek(ShelvedWindow item)
@@ -941,37 +1016,88 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         foreach (var item in Items)
         {
-            if (!_previewElements.TryGetValue(item, out var element) ||
-                element.ActualWidth <= 0 ||
-                element.ActualHeight <= 0)
+            if (!TryGetPreviewBounds(item, out var thumbnailDestination, out var screenBounds))
             {
                 continue;
             }
 
-            Rect bounds;
-            try
+            _shelver.UpdateThumbnailDestination(item, thumbnailDestination);
+            if (item.IsInteractive)
             {
-                bounds = element.TransformToAncestor(RootSurface)
-                    .TransformBounds(new Rect(0, 0, element.ActualWidth, element.ActualHeight));
+                _shelver.UpdateInteractiveZoomBounds(item, screenBounds);
             }
-            catch (InvalidOperationException)
-            {
-                continue;
-            }
-
-            var source = PresentationSource.FromVisual(this);
-            var toDevice = source?.CompositionTarget?.TransformToDevice ?? Matrix.Identity;
-
-            var topLeft = toDevice.Transform(bounds.TopLeft);
-            var bottomRight = toDevice.Transform(bounds.BottomRight);
-            var destination = new NativeMethods.RECT(
-                (int)Math.Round(topLeft.X),
-                (int)Math.Round(topLeft.Y),
-                (int)Math.Round(bottomRight.X),
-                (int)Math.Round(bottomRight.Y));
-
-            _shelver.UpdateThumbnailDestination(item, destination);
         }
+    }
+
+    private NativeMethods.RECT GetPreviewScreenBounds(ShelvedWindow item)
+    {
+        return TryGetPreviewBounds(item, out _, out var screenBounds)
+            ? screenBounds
+            : default;
+    }
+
+    private bool IsCursorInsidePreviewBounds(ShelvedWindow item)
+    {
+        if (!NativeMethods.GetCursorPos(out var point))
+        {
+            return false;
+        }
+
+        var bounds = GetPreviewScreenBounds(item);
+        return bounds.Width > 0 &&
+               bounds.Height > 0 &&
+               point.X >= bounds.Left &&
+               point.X <= bounds.Right &&
+               point.Y >= bounds.Top &&
+               point.Y <= bounds.Bottom;
+    }
+
+    private bool TryGetPreviewBounds(
+        ShelvedWindow item,
+        out NativeMethods.RECT thumbnailDestination,
+        out NativeMethods.RECT screenBounds)
+    {
+        thumbnailDestination = default;
+        screenBounds = default;
+
+        if (!_previewElements.TryGetValue(item, out var element) ||
+            element.ActualWidth <= 0 ||
+            element.ActualHeight <= 0)
+        {
+            return false;
+        }
+
+        Rect rootBounds;
+        try
+        {
+            rootBounds = element.TransformToAncestor(RootSurface)
+                .TransformBounds(new Rect(0, 0, element.ActualWidth, element.ActualHeight));
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+
+        var source = PresentationSource.FromVisual(this);
+        var toDevice = source?.CompositionTarget?.TransformToDevice ?? Matrix.Identity;
+
+        var rootTopLeft = toDevice.Transform(rootBounds.TopLeft);
+        var rootBottomRight = toDevice.Transform(rootBounds.BottomRight);
+        thumbnailDestination = new NativeMethods.RECT(
+            (int)Math.Round(rootTopLeft.X),
+            (int)Math.Round(rootTopLeft.Y),
+            (int)Math.Round(rootBottomRight.X),
+            (int)Math.Round(rootBottomRight.Y));
+
+        var screenTopLeft = element.PointToScreen(new Point(0, 0));
+        var screenBottomRight = element.PointToScreen(new Point(element.ActualWidth, element.ActualHeight));
+        screenBounds = new NativeMethods.RECT(
+            (int)Math.Round(screenTopLeft.X),
+            (int)Math.Round(screenTopLeft.Y),
+            (int)Math.Round(screenBottomRight.X),
+            (int)Math.Round(screenBottomRight.Y));
+
+        return true;
     }
 
     private void ForwardMouseToSource(
@@ -1109,7 +1235,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (_zoomedItem is not null && !_isShelfHidden)
         {
-            return ZoomShelfWidth;
+            return Math.Min(ZoomShelfWidth, Math.Max(ShelfWidth, SystemParameters.VirtualScreenWidth - 24));
         }
 
         if (_peekedItem is not null && !_isShelfHidden)
@@ -1118,6 +1244,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         return ShelfWidth;
+    }
+
+    private static double GetZoomPreviewHeight()
+    {
+        return Math.Clamp(SystemParameters.VirtualScreenHeight - 170, 360, ZoomPreviewHeight);
     }
 
     private static void SetCardInitialTransform(FrameworkElement card)
