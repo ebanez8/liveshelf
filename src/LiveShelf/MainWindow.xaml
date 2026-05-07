@@ -23,16 +23,28 @@
         <SolidColorBrush x:Key="CardBorder" Color="#343C48"/>
         <SolidColorBrush x:Key="TextMuted" Color="#9DA7B5"/>
 
-        <Style x:Key="MediaButtonStyle" TargetType="{x:Type Button}">
-            <Setter Property="MinWidth" Value="48"/>
-            <Setter Property="Height" Value="22"/>
-            <Setter Property="Padding" Value="8,0"/>
-            <Setter Property="Margin" Value="0,0,6,0"/>
-            <Setter Property="Background" Value="#2A3039"/>
-            <Setter Property="BorderBrush" Value="#465061"/>
-            <Setter Property="Foreground" Value="#EEF2F7"/>
-            <Setter Property="FontSize" Value="10"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
+        <Style x:Key="MediaProgressStyle" TargetType="{x:Type ProgressBar}">
+            <Setter Property="Height" Value="5"/>
+            <Setter Property="Foreground" Value="#5FDCD5"/>
+            <Setter Property="Background" Value="#121820"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ProgressBar}">
+                        <Grid ClipToBounds="True">
+                            <Border Background="{TemplateBinding Background}"
+                                    CornerRadius="2.5"/>
+                            <Border x:Name="PART_Track"
+                                    Background="Transparent"/>
+                            <Decorator x:Name="PART_Indicator"
+                                       HorizontalAlignment="Left">
+                                <Border Background="{TemplateBinding Foreground}"
+                                        CornerRadius="2.5"/>
+                            </Decorator>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style x:Key="MenuItemStyle" TargetType="{x:Type MenuItem}">
@@ -68,6 +80,32 @@
                                HorizontalAlignment="Center"
                                VerticalAlignment="Center"/>
                 </Border>
+                <Button DockPanel.Dock="Right"
+                        Content="Agents"
+                        Height="22"
+                        Margin="0,0,8,0"
+                        Padding="8,0"
+                        Background="#2A3039"
+                        BorderBrush="#465061"
+                        Foreground="#EEF2F7"
+                        FontSize="10"
+                        FontWeight="SemiBold"
+                        Click="AgentsButton_Click">
+                    <Button.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="Enable Codex Tracking"
+                                      Style="{StaticResource MenuItemStyle}"
+                                      Click="EnableCodexTrackingMenuItem_Click"/>
+                            <MenuItem Header="Enable Claude Tracking"
+                                      Style="{StaticResource MenuItemStyle}"
+                                      Click="EnableClaudeTrackingMenuItem_Click"/>
+                            <Separator/>
+                            <MenuItem Header="Enable Codex and Claude"
+                                      Style="{StaticResource MenuItemStyle}"
+                                      Click="EnableAllAgentTrackingMenuItem_Click"/>
+                        </ContextMenu>
+                    </Button.ContextMenu>
+                </Button>
             </DockPanel>
 
             <ScrollViewer Grid.Row="1"
@@ -116,7 +154,6 @@
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
 
                                     <Grid Grid.Row="0" Margin="0,0,0,8">
@@ -162,14 +199,11 @@
                                         <ProgressBar Grid.Row="3"
                                                      Grid.Column="0"
                                                      Grid.ColumnSpan="2"
-                                                     Height="4"
                                                      Margin="0,6,0,0"
                                                      Minimum="0"
                                                      Maximum="100"
                                                      Value="{Binding MediaProgressPercent, Mode=OneWay}"
-                                                     Foreground="#5FDCD5"
-                                                     Background="#121820"
-                                                     BorderThickness="0"
+                                                     Style="{StaticResource MediaProgressStyle}"
                                                      Visibility="{Binding MediaProgressVisibility}"/>
 
                                         <StackPanel Grid.Row="0"
@@ -196,17 +230,7 @@
                                         </StackPanel>
                                     </Grid>
 
-                                    <StackPanel Grid.Row="1"
-                                                Orientation="Horizontal"
-                                                Margin="0,0,0,8"
-                                                Visibility="{Binding MediaControlsVisibility}">
-                                        <Button Content="{Binding MediaPlayPauseText}"
-                                                Tag="{Binding}"
-                                                Style="{StaticResource MediaButtonStyle}"
-                                                Click="MediaPlayPauseButton_Click"/>
-                                    </StackPanel>
-
-                                    <Grid Grid.Row="2">
+                                    <Grid Grid.Row="1">
                                         <Border x:Name="PreviewSurface"
                                                 Tag="{Binding}"
                                                 Height="108"

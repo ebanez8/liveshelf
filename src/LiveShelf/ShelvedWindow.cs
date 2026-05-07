@@ -23,6 +23,13 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     private string _detailText = string.Empty;
     private string _mediaSourceTitle = string.Empty;
     private string _mediaSessionId = string.Empty;
+    private string _acknowledgedAgentSignalKey = string.Empty;
+    private string _currentAgentSignalKey = string.Empty;
+    private string _linkedAgentKey = string.Empty;
+    private string _possibleCwd = string.Empty;
+    private string _suspectedAgent = string.Empty;
+    private string _agentDisplayTitle = string.Empty;
+    private string _exePath = string.Empty;
     private string _mediaPlayPauseText = "Play";
     private double _mediaProgressPercent;
     private Brush _badgeBrush = EmptyBadgeBrush;
@@ -50,6 +57,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
         ProcessName = processName;
         SourceProcessId = sourceProcessId;
         LastObservedChangeUtc = DateTime.UtcNow;
+        ShelvedAtUtc = LastObservedChangeUtc;
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -68,6 +76,10 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
     public int SourceProcessId { get; }
 
+    public string Id { get; } = Guid.NewGuid().ToString("N");
+
+    internal DateTime ShelvedAtUtc { get; }
+
     internal DateTime LastObservedChangeUtc { get; set; }
 
     internal DateTime LastStateProbeUtc { get; set; }
@@ -83,6 +95,57 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     internal bool HasObservedBusySignal { get; set; }
 
     internal bool IsAgentLikeSession { get; set; }
+
+    internal string LinkedAgentKey
+    {
+        get => _linkedAgentKey;
+        set
+        {
+            if (_linkedAgentKey == value)
+            {
+                return;
+            }
+
+            _linkedAgentKey = value;
+            OnPropertyChanged(nameof(HasLinkedAgentSession));
+            OnPropertyChanged(nameof(CardTitle));
+        }
+    }
+
+    public bool HasLinkedAgentSession => !string.IsNullOrWhiteSpace(LinkedAgentKey);
+
+    internal string PossibleCwd
+    {
+        get => _possibleCwd;
+        set => _possibleCwd = value;
+    }
+
+    internal string SuspectedAgent
+    {
+        get => _suspectedAgent;
+        set => _suspectedAgent = value;
+    }
+
+    internal string AgentDisplayTitle
+    {
+        get => _agentDisplayTitle;
+        set
+        {
+            if (_agentDisplayTitle == value)
+            {
+                return;
+            }
+
+            _agentDisplayTitle = value;
+            OnPropertyChanged(nameof(CardTitle));
+        }
+    }
+
+    internal string ExePath
+    {
+        get => _exePath;
+        set => _exePath = value;
+    }
 
     internal int LastContentHash { get; set; }
 
@@ -135,7 +198,9 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
     public string CardTitle => IsMediaCard && !string.IsNullOrWhiteSpace(MediaSourceTitle)
         ? MediaSourceTitle
-        : Title;
+        : HasLinkedAgentSession && !string.IsNullOrWhiteSpace(AgentDisplayTitle)
+            ? AgentDisplayTitle
+            : Title;
 
     public bool IsExpanded
     {
@@ -378,6 +443,11 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
     internal void SetBadge(ShelfBadgeKind kind, string detail = "")
     {
+        if (IsAgentLikeSession)
+        {
+            _currentAgentSignalKey = BuildAgentSignalKey(kind, LastContentHash, detail);
+        }
+
         BadgeKind = kind;
 
         (BadgeText, BadgeBrush) = kind switch
@@ -407,12 +477,58 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
         (StatusText, DetailText) = BuildStatusLines(kind, BadgeText, detail);
     }
 
+    internal void SetHookedAgentStatus(ShelfBadgeKind kind, string label, string detail = "")
+    {
+        IsAgentLikeSession = true;
+        BadgeKind = kind;
+
+        BadgeText = label;
+        BadgeBrush = kind switch
+        {
+            ShelfBadgeKind.WaitingForApproval => NeedsAttentionBrush,
+            ShelfBadgeKind.Done or ShelfBadgeKind.DoneNeedsReview => DoneBrush,
+            ShelfBadgeKind.Failed => ErrorBrush,
+            ShelfBadgeKind.EditingFiles or ShelfBadgeKind.RunningCommand or ShelfBadgeKind.Running => RunningBrush,
+            _ => RunningBrush
+        };
+
+        (StatusText, DetailText) = BuildStatusLines(kind, label, detail);
+    }
+
     internal void MarkAttentionSeen()
     {
+        if (HasLinkedAgentSession)
+        {
+            return;
+        }
+
+        if (IsAgentLikeSession && IsAcknowledgableAgentSignal(BadgeKind))
+        {
+            _acknowledgedAgentSignalKey = _currentAgentSignalKey;
+            SetBadge(ShelfBadgeKind.None);
+            return;
+        }
+
         if (BadgeKind is ShelfBadgeKind.Changed or ShelfBadgeKind.Updated or ShelfBadgeKind.NeedsAttention)
         {
             SetBadge(ShelfBadgeKind.None);
         }
+    }
+
+    internal bool IsAcknowledgedAgentSignal(ShelfBadgeKind kind, string detail)
+    {
+        return IsAgentLikeSession &&
+               IsAcknowledgableAgentSignal(kind) &&
+               !string.IsNullOrWhiteSpace(_acknowledgedAgentSignalKey) &&
+               string.Equals(
+                   _acknowledgedAgentSignalKey,
+                   BuildAgentSignalKey(kind, LastContentHash, detail),
+                   StringComparison.Ordinal);
+    }
+
+    internal void ClearAgentSignalAcknowledgement()
+    {
+        _acknowledgedAgentSignalKey = string.Empty;
     }
 
     private void OnPropertyChanged(string propertyName)
@@ -453,6 +569,20 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
         return kind is ShelfBadgeKind.Playing or ShelfBadgeKind.Paused
             ? ($"{status} • {detail}", string.Empty)
             : (status, detail);
+    }
+
+    private static bool IsAcknowledgableAgentSignal(ShelfBadgeKind kind)
+    {
+        return kind is ShelfBadgeKind.Done or
+            ShelfBadgeKind.DoneNeedsReview or
+            ShelfBadgeKind.NeedsReview or
+            ShelfBadgeKind.Failed or
+            ShelfBadgeKind.Error;
+    }
+
+    private static string BuildAgentSignalKey(ShelfBadgeKind kind, int contentHash, string detail)
+    {
+        return $"{kind}:{contentHash}";
     }
 
     internal void SetMediaStatus(

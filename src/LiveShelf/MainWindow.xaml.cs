@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.IO;
 using System.Media;
 using System.Windows;
 using System.Windows.Controls;
@@ -384,6 +385,51 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             ForgetPeek(item);
             _shelver?.Remove(item, restoreIfAlive: true);
+        }
+    }
+
+    private void AgentsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { ContextMenu: { } menu } button)
+        {
+            return;
+        }
+
+        menu.PlacementTarget = button;
+        menu.IsOpen = true;
+        e.Handled = true;
+    }
+
+    private void EnableCodexTrackingMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        InstallAgentHooks(AgentHookInstaller.EnableCodexTracking);
+    }
+
+    private void EnableClaudeTrackingMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        InstallAgentHooks(AgentHookInstaller.EnableClaudeTracking);
+    }
+
+    private void EnableAllAgentTrackingMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        InstallAgentHooks(AgentHookInstaller.EnableAllTracking);
+    }
+
+    private void InstallAgentHooks(Func<AgentHookInstallResult> install)
+    {
+        try
+        {
+            var result = install();
+            StatusMessage = result.Message;
+            if (!result.Success)
+            {
+                SystemSounds.Exclamation.Play();
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            StatusMessage = ex.Message;
+            SystemSounds.Exclamation.Play();
         }
     }
 

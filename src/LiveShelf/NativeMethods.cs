@@ -211,6 +211,24 @@ internal static class NativeMethods
         }
     }
 
+    internal static string GetProcessExePath(int processId)
+    {
+        if (processId <= 0)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return process.MainModule?.FileName ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
     internal static int GetProcessId(IntPtr hwnd)
     {
         GetWindowThreadProcessId(hwnd, out var processId);

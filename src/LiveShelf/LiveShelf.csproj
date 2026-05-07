@@ -9,4 +9,19 @@
     <UseWPF>true</UseWPF>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\LiveShelf.Bridge\LiveShelf.Bridge.csproj"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <Target Name="CopyLiveShelfBridge" AfterTargets="Build">
+    <ItemGroup>
+      <LiveShelfBridgeOutput Include="..\LiveShelf.Bridge\bin\$(Configuration)\net8.0\liveshelf-bridge.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(LiveShelfBridgeOutput)"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('%(LiveShelfBridgeOutput.Identity)')" />
+  </Target>
+
 </Project>

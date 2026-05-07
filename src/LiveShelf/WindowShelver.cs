@@ -1,4 +1,7 @@
 using System.Collections.ObjectModel;
+using System.IO;
+using System.Text.RegularExpressions;
+using System.Windows;
 using System.Windows.Threading;
 
 namespace LiveShelf;
@@ -6,7 +9,7 @@ namespace LiveShelf;
 internal sealed class WindowShelver
 {
     private static readonly TimeSpan InitialFocusSuppression = TimeSpan.FromSeconds(3);
-    private static readonly TimeSpan ContentProbeInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ContentProbeInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan AgentStableDoneDelay = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan StableDoneDelay = TimeSpan.FromSeconds(9);
 
@@ -15,6 +18,8 @@ internal sealed class WindowShelver
     private readonly DispatcherTimer _monitorTimer;
     private readonly Dispatcher _dispatcher;
     private readonly ShelfEventBridge _eventBridge;
+    private readonly AgentEventService _agentEventService;
+    private readonly AgentSessionRegistry _agentSessions;
     private readonly MediaSessionService _mediaSessionService;
     private IReadOnlyList<MediaSessionSnapshot> _latestMediaSessions = [];
     private IntPtr _lastForegroundWindow;
@@ -36,6 +41,14 @@ internal sealed class WindowShelver
 
         _eventBridge = new ShelfEventBridge();
         _eventBridge.EventReceived += EventBridge_EventReceived;
+
+        _agentSessions = new AgentSessionRegistry(() => _items.ToArray());
+        _agentSessions.CardUpdateRequested += AgentSessions_CardUpdateRequested;
+        _agentSessions.AmbiguousLinkDetected += AgentSessions_AmbiguousLinkDetected;
+
+        _agentEventService = new AgentEventService();
+        _agentEventService.EventReceived += AgentEventService_EventReceived;
+        _agentEventService.PublishQueuedEvents();
 
         _mediaSessionService = new MediaSessionService();
         _mediaSessionService.SessionsChanged += MediaSessionService_SessionsChanged;
@@ -82,13 +95,18 @@ internal sealed class WindowShelver
 
         var item = new ShelvedWindow(sourceHwnd, thumbnailHandle, placement, title, processName, processId);
         item.SuppressFocusAlertsUntilUtc = DateTime.UtcNow.Add(InitialFocusSuppression);
-        item.IsAgentLikeSession = LooksLikeAgentSession(processName, title);
+        item.ExePath = NativeMethods.GetProcessExePath(processId);
+        var initialText = WindowContentProbe.TryCapture(sourceHwnd)?.Text ?? string.Empty;
+        item.IsAgentLikeSession = LooksLikeAgentSession(processName, title, initialText);
+        item.SuspectedAgent = InferSuspectedAgent(processName, title, item.ExePath, initialText);
+        item.PossibleCwd = InferPossibleCwd(title, initialText);
 
         try
         {
             ShelvedWindowRegistry.AddOrUpdate(item);
             ParkSourceWindow(sourceHwnd, currentRect);
             _items.Add(item);
+            _agentSessions.TryAutoLinkCard(item);
             _mediaSessionService.RefreshSoon();
             StatusChanged?.Invoke(this, $"Shelved {item.ProcessName}");
             ThumbnailRefreshRequested?.Invoke(this, EventArgs.Empty);
@@ -109,6 +127,7 @@ internal sealed class WindowShelver
         }
 
         EndInteractiveZoom(item);
+        _agentSessions.UnlinkCard(item);
         UnregisterThumbnail(item);
 
         RestoreSourceWindow(item, activate: true);
@@ -126,6 +145,7 @@ internal sealed class WindowShelver
         }
 
         EndInteractiveZoom(item);
+        _agentSessions.UnlinkCard(item);
         UnregisterThumbnail(item);
 
         if (restoreIfAlive && NativeMethods.IsWindow(item.SourceHwnd))
@@ -147,6 +167,7 @@ internal sealed class WindowShelver
         }
 
         EndInteractiveZoom(item);
+        _agentSessions.UnlinkCard(item);
         UnregisterThumbnail(item);
 
         if (NativeMethods.IsWindow(item.SourceHwnd))
@@ -180,6 +201,7 @@ internal sealed class WindowShelver
         _isRestoringAll = true;
         _monitorTimer.Stop();
         _eventBridge.Dispose();
+        _agentEventService.Dispose();
         _mediaSessionService.Dispose();
 
         foreach (var item in _items.ToArray())
@@ -377,6 +399,7 @@ internal sealed class WindowShelver
         try
         {
             EndInteractiveZoom(item);
+            _agentSessions.UnlinkCard(item);
             UnregisterThumbnail(item);
             RestoreSourceWindow(item, activate: false);
             ShelvedWindowRegistry.Remove(item);
@@ -442,6 +465,7 @@ internal sealed class WindowShelver
             item.IsSourceAlive = true;
 
             if (!item.IsInteractive &&
+                !item.HasLinkedAgentSession &&
                 foregroundWindow == item.SourceHwnd &&
                 _lastForegroundWindow != item.SourceHwnd &&
                 now >= item.SuppressFocusAlertsUntilUtc)
@@ -450,6 +474,7 @@ internal sealed class WindowShelver
             }
 
             if (!item.IsInteractive &&
+                !item.HasLinkedAgentSession &&
                 NativeMethods.GetWindowRect(item.SourceHwnd, out var sourceRect) &&
                 IsMeaningfullyVisible(sourceRect, virtualScreen))
             {
@@ -465,7 +490,7 @@ internal sealed class WindowShelver
                 item.HasDetectedChange = true;
                 item.HasReportedStable = false;
                 item.IsAgentLikeSession |= LooksLikeAgentSession(item.ProcessName, item.Title);
-                if (!item.IsMediaCard)
+                if (!item.IsMediaCard && !item.HasLinkedAgentSession)
                 {
                     SetBadgeAndAlert(item, GetTitleChangeBadge(item));
                 }
@@ -484,6 +509,58 @@ internal sealed class WindowShelver
         _dispatcher.InvokeAsync(() => ApplyBridgeEvent(bridgeEvent));
     }
 
+    private void AgentEventService_EventReceived(object? sender, AgentEvent agentEvent)
+    {
+        _dispatcher.InvokeAsync(() => _agentSessions.ApplyEvent(agentEvent));
+    }
+
+    private void AgentSessions_CardUpdateRequested(object? sender, AgentCardUpdate update)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            update.Card.AgentDisplayTitle = FormatAgentDisplayTitle(update.Session.Source);
+            update.Card.SetHookedAgentStatus(update.Badge.Kind, update.Badge.Label, update.Badge.Detail);
+            if (update.Badge.Notify)
+            {
+                AttentionRequested?.Invoke(this, update.Card);
+            }
+        });
+    }
+
+    private void AgentSessions_AmbiguousLinkDetected(object? sender, AgentLinkAmbiguousEventArgs e)
+    {
+        _dispatcher.InvokeAsync(() =>
+        {
+            var first = e.Candidates.FirstOrDefault();
+            if (first is null)
+            {
+                return;
+            }
+
+            var second = e.Candidates.Skip(1).FirstOrDefault();
+            var cwd = string.IsNullOrWhiteSpace(e.Session.Cwd) ? e.Session.SessionId : e.Session.Cwd;
+            var agentName = FormatAgentDisplayTitle(e.Session.Source);
+            var message = second is null
+                ? $"{agentName} session detected in:{Environment.NewLine}{cwd}{Environment.NewLine}{Environment.NewLine}Link it to {first.Card.Title}?"
+                : $"{agentName} session detected in:{Environment.NewLine}{cwd}{Environment.NewLine}{Environment.NewLine}Yes: {first.Card.Title}{Environment.NewLine}No: {second.Card.Title}{Environment.NewLine}Cancel: Ignore";
+
+            var buttons = second is null ? MessageBoxButton.YesNo : MessageBoxButton.YesNoCancel;
+            var result = MessageBox.Show(message, "Link coding agent session", buttons, MessageBoxImage.Question);
+            if (result == MessageBoxResult.Yes)
+            {
+                _agentSessions.LinkSessionToCard(e.Session, first.Card);
+            }
+            else if (result == MessageBoxResult.No && second is not null)
+            {
+                _agentSessions.LinkSessionToCard(e.Session, second.Card);
+            }
+            else
+            {
+                StatusChanged?.Invoke(this, $"{agentName} session left unlinked");
+            }
+        });
+    }
+
     private void MediaSessionService_SessionsChanged(
         object? sender,
         IReadOnlyList<MediaSessionSnapshot> sessions)
@@ -499,7 +576,20 @@ internal sealed class WindowShelver
             return;
         }
 
-        var badge = GetBridgeBadge(bridgeEvent);
+        if (item.HasLinkedAgentSession)
+        {
+            return;
+        }
+
+        var isAgentEvent = IsAgentBridgeEvent(bridgeEvent) ||
+                           item.IsAgentLikeSession ||
+                           LooksLikeAgentSession(item.ProcessName, item.Title);
+        if (isAgentEvent)
+        {
+            item.IsAgentLikeSession = true;
+        }
+
+        var badge = GetBridgeBadge(bridgeEvent, item);
         if (badge is ShelfBadgeKind.None)
         {
             return;
@@ -511,6 +601,7 @@ internal sealed class WindowShelver
 
         if (IsRunningBadge(badge))
         {
+            item.ClearAgentSignalAcknowledgement();
             item.HasObservedBusySignal = true;
             item.HasReportedStable = false;
         }
@@ -595,6 +686,12 @@ internal sealed class WindowShelver
         var assignedSessionIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var item in _items)
         {
+            if (!CanBecomeMediaCard(item))
+            {
+                item.ClearMediaStatus();
+                continue;
+            }
+
             var match = FindBestMediaSessionMatch(item, sessions, assignedSessionIds);
             if (match is null)
             {
@@ -612,6 +709,11 @@ internal sealed class WindowShelver
         IReadOnlyList<MediaSessionSnapshot> sessions,
         HashSet<string> assignedSessionIds)
     {
+        if (!CanBecomeMediaCard(item))
+        {
+            return null;
+        }
+
         MediaSessionSnapshot? bestSession = null;
         var bestScore = 0;
 
@@ -648,6 +750,13 @@ internal sealed class WindowShelver
         }
 
         return bestScore >= threshold ? bestSession : null;
+    }
+
+    private static bool CanBecomeMediaCard(ShelvedWindow item)
+    {
+        return !item.HasLinkedAgentSession &&
+               !item.IsAgentLikeSession &&
+               !IsTerminalProcess(item.ProcessName);
     }
 
     private int CountShelvedBrowserWindowsForSession(MediaSessionSnapshot session)
@@ -728,6 +837,11 @@ internal sealed class WindowShelver
             score += 14;
         }
 
+        if (IsLikelyTransientBrowserAd(item, session))
+        {
+            score -= 42;
+        }
+
         return score;
     }
 
@@ -774,7 +888,8 @@ internal sealed class WindowShelver
             : session.IsPaused
                 ? ShelfBadgeKind.Paused
                 : ShelfBadgeKind.Changed;
-        var progressText = FormatProgressText(session);
+        var hasReliableProgress = HasReliableMediaProgress(item, session);
+        var progressText = hasReliableProgress ? FormatProgressText(session) : string.Empty;
         var mediaDetail = FormatMediaDetail(session);
         var sourceTitle = ResolveMediaSourceTitle(item, session);
 
@@ -785,8 +900,14 @@ internal sealed class WindowShelver
             progressText,
             mediaDetail,
             session.Progress,
-            session.Duration > TimeSpan.FromSeconds(1),
+            hasReliableProgress,
             session.CanTogglePlayPause);
+    }
+
+    private static bool HasReliableMediaProgress(ShelvedWindow item, MediaSessionSnapshot session)
+    {
+        return session.Duration > TimeSpan.FromSeconds(1) &&
+               !IsLikelyTransientBrowserAd(item, session);
     }
 
     private static string ResolveMediaSourceTitle(ShelvedWindow item, MediaSessionSnapshot session)
@@ -876,9 +997,52 @@ internal sealed class WindowShelver
             : $"{(int)value.TotalMinutes}:{value.Seconds:00}";
     }
 
+    private static bool IsLikelyTransientBrowserAd(ShelvedWindow item, MediaSessionSnapshot session)
+    {
+        if (!IsBrowserProcess(item.ProcessName))
+        {
+            return false;
+        }
+
+        if (!ContainsKnownMediaSite(item.Title, session.Title))
+        {
+            return false;
+        }
+
+        if (LooksLikeAdText(session.Title) || LooksLikeAdText(session.Artist))
+        {
+            return true;
+        }
+
+        if (session.Duration <= TimeSpan.Zero || session.Duration > TimeSpan.FromSeconds(90))
+        {
+            return false;
+        }
+
+        return !HasMediaTitleMatch(item.Title, session.Title);
+    }
+
+    private static bool HasMediaTitleMatch(string windowTitle, string mediaTitle)
+    {
+        var windowToken = NormalizeToken(windowTitle);
+        var mediaToken = NormalizeToken(mediaTitle);
+
+        return !string.IsNullOrWhiteSpace(mediaToken) &&
+               mediaToken.Length >= 8 &&
+               (windowToken.Contains(mediaToken, StringComparison.Ordinal) ||
+                mediaToken.Contains(windowToken, StringComparison.Ordinal));
+    }
+
+    private static bool LooksLikeAdText(string text)
+    {
+        return text.Contains("advertisement", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("sponsored", StringComparison.OrdinalIgnoreCase) ||
+               text.Equals("ad", StringComparison.OrdinalIgnoreCase);
+    }
+
     private void ObserveWindowContent(ShelvedWindow item, DateTime now)
     {
-        if (item.IsMediaCard)
+        if (item.IsMediaCard || item.HasLinkedAgentSession)
         {
             return;
         }
@@ -902,6 +1066,7 @@ internal sealed class WindowShelver
         var looksBusy = LooksBusy(text);
         if (looksBusy)
         {
+            item.ClearAgentSignalAcknowledgement();
             item.HasObservedBusySignal = true;
             item.HasDetectedChange = true;
             item.HasReportedStable = false;
@@ -912,12 +1077,6 @@ internal sealed class WindowShelver
         {
             item.HasContentSnapshot = true;
             item.LastContentHash = snapshot.Hash;
-            if (item.IsAgentLikeSession && !looksBusy)
-            {
-                item.HasDetectedChange = true;
-                item.HasReportedStable = false;
-                item.LastObservedChangeUtc = now;
-            }
 
             return;
         }
@@ -925,11 +1084,20 @@ internal sealed class WindowShelver
         if (snapshot.Hash != item.LastContentHash)
         {
             item.LastContentHash = snapshot.Hash;
+            var contentBadge = GetContentChangeBadge(item, text);
+            if (item.IsAgentLikeSession && contentBadge is ShelfBadgeKind.None)
+            {
+                return;
+            }
+
             item.LastObservedChangeUtc = now;
             item.HasDetectedChange = true;
             item.HasReportedStable = false;
+            if (item.IsAgentLikeSession)
+            {
+                item.ClearAgentSignalAcknowledgement();
+            }
 
-            var contentBadge = GetContentChangeBadge(item, text);
             if (contentBadge is not ShelfBadgeKind.None)
             {
                 SetBadgeAndAlert(item, contentBadge);
@@ -963,6 +1131,11 @@ internal sealed class WindowShelver
         string detail = "")
     {
         if (item.BadgeKind == badgeKind && string.IsNullOrWhiteSpace(detail))
+        {
+            return;
+        }
+
+        if (item.IsAcknowledgedAgentSignal(badgeKind, detail))
         {
             return;
         }
@@ -1010,7 +1183,7 @@ internal sealed class WindowShelver
                 return ShelfBadgeKind.WaitingForApproval;
             }
 
-            if (LooksFailure(recentText))
+            if (LooksExplicitAgentStopFailure(recentText))
             {
                 return ShelfBadgeKind.Failed;
             }
@@ -1038,15 +1211,26 @@ internal sealed class WindowShelver
         return LooksDone(recentText) ? ShelfBadgeKind.Done : ShelfBadgeKind.None;
     }
 
-    private static ShelfBadgeKind GetBridgeBadge(ShelfBridgeEvent bridgeEvent)
+    private static ShelfBadgeKind GetBridgeBadge(ShelfBridgeEvent bridgeEvent, ShelvedWindow? target = null)
     {
-        var isAgentEvent = IsAgentBridgeEvent(bridgeEvent);
+        var isAgentEvent = IsAgentBridgeEvent(bridgeEvent) ||
+                           target?.IsAgentLikeSession == true ||
+                           (target is not null && LooksLikeAgentSession(target.ProcessName, target.Title));
         var explicitStatus = MapStatusToken(bridgeEvent.Status);
         if (explicitStatus is not ShelfBadgeKind.None)
         {
-            return isAgentEvent && explicitStatus is ShelfBadgeKind.Done
-                ? ShelfBadgeKind.DoneNeedsReview
-                : explicitStatus;
+            if (!isAgentEvent)
+            {
+                return explicitStatus;
+            }
+
+            return explicitStatus switch
+            {
+                ShelfBadgeKind.Done => ShelfBadgeKind.DoneNeedsReview,
+                ShelfBadgeKind.Failed or ShelfBadgeKind.Error when IsAgentFinalEvent(bridgeEvent.EventName) => ShelfBadgeKind.Failed,
+                ShelfBadgeKind.Failed or ShelfBadgeKind.Error => ShelfBadgeKind.Running,
+                _ => explicitStatus
+            };
         }
 
         var eventName = NormalizeToken(bridgeEvent.EventName);
@@ -1061,8 +1245,7 @@ internal sealed class WindowShelver
             }
 
             if (eventName.Contains("stopfailure", StringComparison.Ordinal) ||
-                bridgeEvent.Success == false ||
-                LooksFailure(text))
+                (eventName == "stop" && bridgeEvent.Success == false))
             {
                 return ShelfBadgeKind.Failed;
             }
@@ -1149,9 +1332,9 @@ internal sealed class WindowShelver
             return ShelfBadgeKind.WaitingForApproval;
         }
 
-        if (LooksFailure(text))
+        if (LooksPromptReady(text))
         {
-            return ShelfBadgeKind.Failed;
+            return ShelfBadgeKind.None;
         }
 
         if (LooksAgentEditing(text))
@@ -1169,11 +1352,16 @@ internal sealed class WindowShelver
             return ShelfBadgeKind.Running;
         }
 
-        return LooksDone(text) ? ShelfBadgeKind.DoneNeedsReview : ShelfBadgeKind.Changed;
+        return ShelfBadgeKind.None;
     }
 
     private static ShelfBadgeKind GetSmartTextBadge(string processName, string text)
     {
+        if (IsTerminalProcess(processName) && LooksPromptReady(text))
+        {
+            return ShelfBadgeKind.Changed;
+        }
+
         if (LooksError(text))
         {
             return ShelfBadgeKind.Error;
@@ -1330,6 +1518,12 @@ internal sealed class WindowShelver
                token.Contains("stopfailure", StringComparison.Ordinal);
     }
 
+    private static bool IsAgentFinalEvent(string eventName)
+    {
+        var normalized = NormalizeToken(eventName);
+        return normalized is "stop" or "stopfailure" or "done" or "final";
+    }
+
     private static bool IsFileEditingTool(string normalizedTool, string text)
     {
         return normalizedTool.Contains("applypatch", StringComparison.Ordinal) ||
@@ -1383,22 +1577,18 @@ internal sealed class WindowShelver
                text.Contains("generation complete", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool LooksFailure(string text)
+    private static bool LooksExplicitAgentStopFailure(string text)
     {
-        return text.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
-               text.Contains("failure", StringComparison.OrdinalIgnoreCase) ||
-               text.Contains("error", StringComparison.OrdinalIgnoreCase) ||
-               text.Contains("exception", StringComparison.OrdinalIgnoreCase) ||
-               text.Contains("build failed", StringComparison.OrdinalIgnoreCase) ||
-               text.Contains("tests failed", StringComparison.OrdinalIgnoreCase) ||
-               text.Contains("stopfailure", StringComparison.OrdinalIgnoreCase);
+        return text.Contains("stopfailure", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("stop failure", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool LooksError(string text)
     {
-        return text.Contains("error", StringComparison.OrdinalIgnoreCase) ||
-               text.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
-               text.Contains("failure", StringComparison.OrdinalIgnoreCase) ||
+        return text.Contains("fatal error", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("unhandled exception", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("access violation", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("out of memory", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("cannot continue", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("something went wrong", StringComparison.OrdinalIgnoreCase);
     }
@@ -1454,6 +1644,11 @@ internal sealed class WindowShelver
 
     private static bool LooksAgentEditing(string text)
     {
+        if (LooksPromptReady(text))
+        {
+            return false;
+        }
+
         return text.Contains("editing files", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("applying patch", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("updated file", StringComparison.OrdinalIgnoreCase) ||
@@ -1462,6 +1657,11 @@ internal sealed class WindowShelver
 
     private static bool LooksAgentRunningCommand(string text)
     {
+        if (LooksPromptReady(text))
+        {
+            return false;
+        }
+
         return text.Contains("running command", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("shell command", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("npm ", StringComparison.OrdinalIgnoreCase) ||
@@ -1477,6 +1677,11 @@ internal sealed class WindowShelver
         var recentLines = GetRecentNonEmptyLines(tail, 8);
         var recent = string.Join('\n', recentLines);
         var lastLine = recentLines.LastOrDefault() ?? string.Empty;
+
+        if (LooksPromptReadyLine(lastLine))
+        {
+            return false;
+        }
 
         return recent.Contains("esc to interrupt", StringComparison.OrdinalIgnoreCase) ||
                recent.Contains("ctrl+c to interrupt", StringComparison.OrdinalIgnoreCase) ||
@@ -1537,6 +1742,61 @@ internal sealed class WindowShelver
         return ContainsAgentName(processName) ||
                ContainsAgentName(title) ||
                ContainsAgentName(Tail(text, 4000));
+    }
+
+    private static string InferSuspectedAgent(string processName, string title, string exePath, string text)
+    {
+        var token = $"{processName} {title} {exePath} {Tail(text, 4000)}";
+        if (token.Contains("codex", StringComparison.OrdinalIgnoreCase))
+        {
+            return "codex";
+        }
+
+        return token.Contains("claude", StringComparison.OrdinalIgnoreCase) ? "claude" : string.Empty;
+    }
+
+    private static string InferPossibleCwd(string title, string text)
+    {
+        foreach (var line in GetRecentNonEmptyLines(text, 16).Reverse())
+        {
+            var cwd = TryExtractWindowsPath(line);
+            if (!string.IsNullOrWhiteSpace(cwd))
+            {
+                return cwd;
+            }
+        }
+
+        return TryExtractWindowsPath(title);
+    }
+
+    private static string TryExtractWindowsPath(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        var match = Regex.Match(
+            text,
+            @"(?<path>[A-Za-z]:\\[^<>:""|?*\r\n]+)",
+            RegexOptions.CultureInvariant);
+        if (!match.Success)
+        {
+            return string.Empty;
+        }
+
+        var path = match.Groups["path"].Value.Trim();
+        path = path.TrimEnd('>', '$', '#', ' ', '\t');
+        return Directory.Exists(path) ? path : Path.GetDirectoryName(path) ?? path;
+    }
+
+    private static string FormatAgentDisplayTitle(string source)
+    {
+        return source.Contains("claude", StringComparison.OrdinalIgnoreCase)
+            ? "Claude Code"
+            : source.Contains("codex", StringComparison.OrdinalIgnoreCase)
+                ? "Codex"
+                : "Coding Agent";
     }
 
     private static bool ContainsAgentName(string text)

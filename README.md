@@ -26,17 +26,35 @@ Press `Ctrl+Alt+S` while another normal desktop window is focused. The window is
 - Moving the mouse outside the shelf automatically exits full zoom and collapses the peek.
 - Cards show task badges for changed, updated, loading, running, editing files, running command, waiting for approval, done, done-needs-review, failed, closed, needs-input, playing, paused, upload-complete, and error states.
 - Cards subtly pulse when a shelved window title changes, closes, restores itself, or gets focus.
-- Agent Cards can receive direct lifecycle events from Codex, Claude Code, Cursor, terminal agents, or hook scripts through the `LiveShelf.Events` named pipe. `PreToolUse`, `PostToolUse`, `PermissionRequest`, `UserPromptSubmit`, `Stop`, and `StopFailure` map to high-confidence running, editing, waiting-for-approval, done-needs-review, and failed badges.
-- Media Cards use Windows System Media Transport Controls through `GlobalSystemMediaTransportControlsSessionManager`. They show playing/paused state, track/video metadata, estimated timeline progress, and a play/pause control for sessions that support it.
+- Agent Cards can receive direct lifecycle events from Codex and Claude Code through the bundled `liveshelf-bridge.exe`, the `LiveShelfAgentEvents` named pipe, and automatic session linking. Once a card is linked to a hook session, hook state is the source of truth for agent badges.
+- Media Cards use Windows System Media Transport Controls through `GlobalSystemMediaTransportControlsSessionManager`. They show playing/paused state, track/video metadata, and estimated timeline progress.
 - Smart Cards use softer layered detection from window titles and UI Automation text. Browser/native integrations can also publish status events to `LiveShelf.Events` for loading, updated, done, needs-input, playing, paused, upload-complete, and error badges.
 - Click to restore.
 - Right-click actions for restore, close source, and remove card.
 - On app exit or handled UI crash, still-shelved windows are restored to their original placement/state when their HWND still exists.
 - Shelved window placement is also persisted under `%LOCALAPPDATA%\LiveShelf\shelved-windows.json`, so the next launch can restore windows left behind by a hard crash.
 
+## Agent Tracking
+
+Use the `Agents` menu in the shelf header to enable Codex tracking, Claude tracking, or both. Live Shelf copies the bundled bridge files into `%LOCALAPPDATA%\LiveShelf` and writes the user-level hook config files:
+
+- Codex: `%USERPROFILE%\.codex\config.toml` and `%USERPROFILE%\.codex\hooks.json`
+- Claude Code: `%USERPROFILE%\.claude\settings.json`
+
+Codex and Claude hooks run:
+
+```text
+"%LOCALAPPDATA%\LiveShelf\liveshelf-bridge.exe" --source codex
+"%LOCALAPPDATA%\LiveShelf\liveshelf-bridge.exe" --source claude
+```
+
+The bridge reads hook JSON from stdin, normalizes it, sends it to the local named pipe `LiveShelfAgentEvents`, and exits. If Live Shelf is closed, the bridge appends JSONL events to `%LOCALAPPDATA%\LiveShelf\queued-agent-events.jsonl`; Live Shelf drains that queue on launch.
+
+Live Shelf keeps a registry keyed by `source:sessionId`. It auto-links sessions to shelved terminal cards by scoring cwd, title/project name, agent hints, terminal process type, and recency. A confident winner links automatically; ambiguous matches surface a small status prompt instead of guessing. After linking, OCR/window text no longer creates agent badges for that card, and alerts only fire for waiting-for-approval, done, or final failed states.
+
 ## Status Event Bridge
 
-Hook scripts and browser/native integrations can send newline-delimited JSON to the local named pipe `LiveShelf.Events`.
+Browser/native integrations can still send newline-delimited JSON to the local named pipe `LiveShelf.Events`.
 
 ```json
 {"source":"codex","event":"PreToolUse","tool":"apply_patch","status":"editing_files","filesChanged":4}
@@ -45,7 +63,7 @@ Hook scripts and browser/native integrations can send newline-delimited JSON to 
 {"source":"browser","status":"upload_complete","title":"Google Drive"}
 ```
 
-Events can target a card with `hwnd`, `processId`/`pid`, `processName`, or `windowTitle`/`title`. If an agent event has no explicit target, Live Shelf applies it to the most recently active shelved terminal/agent card.
+Events can target a card with `hwnd`, `processId`/`pid`, `processName`, or `windowTitle`/`title`. Hook-linked agent cards ignore this generic bridge for agent badges.
 
 ## Media Cards
 
@@ -57,7 +75,6 @@ The card displays:
 - Playback state and timeline, such as `Playing • 12:48 / 21:10`.
 - Media title and artist/channel when Windows exposes it.
 - A progress bar.
-- A compact play/pause button when the session supports remote control.
 
 ## Known Limits
 
