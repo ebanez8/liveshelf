@@ -72,6 +72,8 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
     internal bool HasObservedBusySignal { get; set; }
 
+    internal bool IsAgentLikeSession { get; set; }
+
     internal int LastContentHash { get; set; }
 
     internal bool IsInteractive
