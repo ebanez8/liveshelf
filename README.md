@@ -23,6 +23,7 @@ Press `Ctrl+Alt+S` while another normal desktop window is focused. The window is
 - Moving the mouse outside the shelf automatically exits full zoom and collapses the peek.
 - Cards show smart badges for changed, updated, done, closed, and needs-attention states.
 - Cards subtly pulse when a shelved window title changes, closes, restores itself, or gets focus.
+- Terminal and agent windows are also probed through UI Automation when available. Live Shelf watches exposed text changes and marks `Done` after a Codex/Claude-style session becomes stable after recent activity.
 - Click to restore.
 - Right-click actions for restore, close source, and remove card.
 - On app exit, still-shelved windows are restored when their HWND still exists.

@@ -52,11 +52,19 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
     internal DateTime LastObservedChangeUtc { get; set; }
 
+    internal DateTime LastStateProbeUtc { get; set; }
+
     internal DateTime SuppressFocusAlertsUntilUtc { get; set; }
 
     internal bool HasDetectedChange { get; set; }
 
     internal bool HasReportedStable { get; set; }
+
+    internal bool HasContentSnapshot { get; set; }
+
+    internal bool HasObservedBusySignal { get; set; }
+
+    internal int LastContentHash { get; set; }
 
     internal bool IsInteractive
     {

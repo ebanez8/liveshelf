@@ -6,6 +6,8 @@ namespace LiveShelf;
 internal sealed class WindowShelver
 {
     private static readonly TimeSpan InitialFocusSuppression = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan ContentProbeInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan StableDoneDelay = TimeSpan.FromSeconds(9);
 
     private readonly IntPtr _shelfHwnd;
     private readonly ObservableCollection<ShelvedWindow> _items;
@@ -384,9 +386,68 @@ internal sealed class WindowShelver
                 item.HasReportedStable = false;
                 SetBadgeAndAlert(item, GetTitleChangeBadge(item));
             }
+
+            ObserveWindowContent(item, now);
         }
 
         _lastForegroundWindow = foregroundWindow;
+    }
+
+    private void ObserveWindowContent(ShelvedWindow item, DateTime now)
+    {
+        if (now - item.LastStateProbeUtc < ContentProbeInterval)
+        {
+            return;
+        }
+
+        item.LastStateProbeUtc = now;
+
+        var snapshot = WindowContentProbe.TryCapture(item.SourceHwnd);
+        if (snapshot is null)
+        {
+            return;
+        }
+
+        var text = snapshot.Text;
+        var looksBusy = LooksBusy(text);
+        if (looksBusy)
+        {
+            item.HasObservedBusySignal = true;
+        }
+
+        if (!item.HasContentSnapshot)
+        {
+            item.HasContentSnapshot = true;
+            item.LastContentHash = snapshot.Hash;
+            return;
+        }
+
+        if (snapshot.Hash != item.LastContentHash)
+        {
+            item.LastContentHash = snapshot.Hash;
+            item.LastObservedChangeUtc = now;
+            item.HasDetectedChange = true;
+            item.HasReportedStable = false;
+
+            var contentBadge = GetContentChangeBadge(item, text);
+            if (contentBadge is not ShelfBadgeKind.None)
+            {
+                SetBadgeAndAlert(item, contentBadge);
+            }
+
+            return;
+        }
+
+        if (!item.HasDetectedChange ||
+            item.HasReportedStable ||
+            now - item.LastObservedChangeUtc < StableDoneDelay ||
+            !ShouldTreatStableContentAsDone(item, text))
+        {
+            return;
+        }
+
+        item.HasReportedStable = true;
+        SetBadgeAndAlert(item, ShelfBadgeKind.Done);
     }
 
     private void SetBadgeAndAlert(ShelvedWindow item, ShelfBadgeKind badgeKind)
@@ -413,13 +474,45 @@ internal sealed class WindowShelver
         }
 
         var processName = item.ProcessName;
-        return processName.Contains("chrome", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("msedge", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("firefox", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("brave", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("opera", StringComparison.OrdinalIgnoreCase)
+        return IsBrowserProcess(processName)
             ? ShelfBadgeKind.Updated
             : ShelfBadgeKind.Changed;
+    }
+
+    private static ShelfBadgeKind GetContentChangeBadge(ShelvedWindow item, string text)
+    {
+        var recentText = Tail(text, 1800);
+        if (LooksLikeNeedsAttention(recentText))
+        {
+            return ShelfBadgeKind.NeedsAttention;
+        }
+
+        if (LooksDone(recentText))
+        {
+            return ShelfBadgeKind.Done;
+        }
+
+        if (LooksBusy(text))
+        {
+            return ShelfBadgeKind.None;
+        }
+
+        return IsBrowserProcess(item.ProcessName)
+            ? ShelfBadgeKind.Updated
+            : ShelfBadgeKind.Changed;
+    }
+
+    private static bool ShouldTreatStableContentAsDone(ShelvedWindow item, string text)
+    {
+        if (LooksLikeNeedsAttention(Tail(text, 1800)) || LooksBusy(text))
+        {
+            return false;
+        }
+
+        var isTerminalOrAgent = IsLikelyTerminalOrAgentWindow(item.ProcessName, text);
+        return LooksDone(text) ||
+               (isTerminalOrAgent && LooksPromptReady(text)) ||
+               (isTerminalOrAgent && item.HasObservedBusySignal);
     }
 
     private static bool ShouldReplaceBadge(ShelfBadgeKind current, ShelfBadgeKind next)
@@ -441,7 +534,7 @@ internal sealed class WindowShelver
 
         if (next == ShelfBadgeKind.Done)
         {
-            return current is ShelfBadgeKind.Changed or ShelfBadgeKind.Updated;
+            return current is ShelfBadgeKind.None or ShelfBadgeKind.Changed or ShelfBadgeKind.Updated or ShelfBadgeKind.Done;
         }
 
         return true;
@@ -454,6 +547,11 @@ internal sealed class WindowShelver
                title.Contains("completed", StringComparison.OrdinalIgnoreCase) ||
                title.Contains("finished", StringComparison.OrdinalIgnoreCase) ||
                title.Contains("success", StringComparison.OrdinalIgnoreCase) ||
+               title.Contains("succeeded", StringComparison.OrdinalIgnoreCase) ||
+               title.Contains("build succeeded", StringComparison.OrdinalIgnoreCase) ||
+               title.Contains("tests passed", StringComparison.OrdinalIgnoreCase) ||
+               title.Contains("all tests pass", StringComparison.OrdinalIgnoreCase) ||
+               title.Contains("changes made", StringComparison.OrdinalIgnoreCase) ||
                title.Contains("100%", StringComparison.OrdinalIgnoreCase) ||
                title.Contains("0:00", StringComparison.OrdinalIgnoreCase);
     }
@@ -467,6 +565,98 @@ internal sealed class WindowShelver
                title.Contains("sign in", StringComparison.OrdinalIgnoreCase) ||
                title.Contains("password", StringComparison.OrdinalIgnoreCase) ||
                title.Contains("attention", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksBusy(string text)
+    {
+        var tail = Tail(text, 1400);
+        var lastLine = GetLastNonEmptyLine(tail);
+
+        return tail.Contains("esc to interrupt", StringComparison.OrdinalIgnoreCase) ||
+               tail.Contains("ctrl+c to interrupt", StringComparison.OrdinalIgnoreCase) ||
+               tail.Contains("press esc", StringComparison.OrdinalIgnoreCase) ||
+               tail.Contains("stop generating", StringComparison.OrdinalIgnoreCase) ||
+               tail.Contains("applying patch", StringComparison.OrdinalIgnoreCase) ||
+               lastLine.Contains("thinking", StringComparison.OrdinalIgnoreCase) ||
+               lastLine.Contains("working", StringComparison.OrdinalIgnoreCase) ||
+               lastLine.Contains("running", StringComparison.OrdinalIgnoreCase) ||
+               lastLine.Contains("editing", StringComparison.OrdinalIgnoreCase) ||
+               lastLine.Contains("writing", StringComparison.OrdinalIgnoreCase) ||
+               lastLine.Contains("reading", StringComparison.OrdinalIgnoreCase) ||
+               lastLine.Contains("searching", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksPromptReady(string text)
+    {
+        var lastLine = GetLastNonEmptyLine(text).Trim();
+        if (lastLine.Length is < 1 or > 180)
+        {
+            return false;
+        }
+
+        return lastLine.StartsWith("PS ", StringComparison.OrdinalIgnoreCase) ||
+               lastLine.StartsWith("C:\\", StringComparison.OrdinalIgnoreCase) ||
+               lastLine.StartsWith(">", StringComparison.Ordinal) ||
+               lastLine.EndsWith("$", StringComparison.Ordinal) ||
+               lastLine.EndsWith(">", StringComparison.Ordinal) ||
+               lastLine.EndsWith("❯", StringComparison.Ordinal) ||
+               lastLine.Contains("›", StringComparison.Ordinal) ||
+               lastLine.Contains("➜", StringComparison.Ordinal) ||
+               lastLine.Contains("λ", StringComparison.Ordinal);
+    }
+
+    private static bool IsLikelyTerminalOrAgentWindow(string processName, string text)
+    {
+        return IsTerminalProcess(processName) ||
+               text.Contains("codex", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("claude", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("claude code", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("opencode", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("aider", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("gemini cli", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTerminalProcess(string processName)
+    {
+        return processName.Contains("windowsterminal", StringComparison.OrdinalIgnoreCase) ||
+               processName.Equals("wt", StringComparison.OrdinalIgnoreCase) ||
+               processName.Contains("conhost", StringComparison.OrdinalIgnoreCase) ||
+               processName.Contains("cmd", StringComparison.OrdinalIgnoreCase) ||
+               processName.Contains("powershell", StringComparison.OrdinalIgnoreCase) ||
+               processName.Contains("pwsh", StringComparison.OrdinalIgnoreCase) ||
+               processName.Contains("wezterm", StringComparison.OrdinalIgnoreCase) ||
+               processName.Contains("alacritty", StringComparison.OrdinalIgnoreCase) ||
+               processName.Contains("tabby", StringComparison.OrdinalIgnoreCase) ||
+               processName.Contains("hyper", StringComparison.OrdinalIgnoreCase) ||
+               processName.Contains("ghostty", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsBrowserProcess(string processName)
+    {
+        return processName.Contains("chrome", StringComparison.OrdinalIgnoreCase) ||
+               processName.Contains("msedge", StringComparison.OrdinalIgnoreCase) ||
+               processName.Contains("firefox", StringComparison.OrdinalIgnoreCase) ||
+               processName.Contains("brave", StringComparison.OrdinalIgnoreCase) ||
+               processName.Contains("opera", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string Tail(string text, int length)
+    {
+        return text.Length <= length ? text : text[^length..];
+    }
+
+    private static string GetLastNonEmptyLine(string text)
+    {
+        var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        for (var i = lines.Length - 1; i >= 0; i--)
+        {
+            if (!string.IsNullOrWhiteSpace(lines[i]))
+            {
+                return lines[i].Trim();
+            }
+        }
+
+        return string.Empty;
     }
 
     private static bool IsMeaningfullyVisible(NativeMethods.RECT rect, NativeMethods.RECT virtualScreen)
