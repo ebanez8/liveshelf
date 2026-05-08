@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Text.RegularExpressions;
 using System.Text.Json;
@@ -26,7 +27,10 @@ internal static class AgentHookInstaller
             Path.Combine(codexDirectory, "hooks.json"),
             BuildCodexHooks(BuildBridgeCommand(bridgePath, "codex")));
 
-        return new AgentHookInstallResult(true, $"Codex tracking enabled using {bridgePath}");
+        var test = TestBridge(bridgePath, "codex");
+        return test.Success
+            ? new AgentHookInstallResult(true, $"Codex tracking enabled and tested using {bridgePath}")
+            : test;
     }
 
     public static AgentHookInstallResult EnableClaudeTracking()
@@ -40,7 +44,10 @@ internal static class AgentHookInstaller
             Path.Combine(claudeDirectory, "settings.json"),
             BuildClaudeHooks(BuildBridgeCommand(bridgePath, "claude")));
 
-        return new AgentHookInstallResult(true, $"Claude tracking enabled using {bridgePath}");
+        var test = TestBridge(bridgePath, "claude");
+        return test.Success
+            ? new AgentHookInstallResult(true, $"Claude tracking enabled and tested using {bridgePath}")
+            : test;
     }
 
     public static AgentHookInstallResult EnableAllTracking()
@@ -52,6 +59,16 @@ internal static class AgentHookInstaller
             : new AgentHookInstallResult(false, $"{codex.Message}; {claude.Message}");
     }
 
+    public static AgentHookInstallResult TestCodexTracking()
+    {
+        return TestBridge(EnsureBridgeInstalled(), "codex");
+    }
+
+    public static AgentHookInstallResult TestClaudeTracking()
+    {
+        return TestBridge(EnsureBridgeInstalled(), "claude");
+    }
+
     private static string EnsureBridgeInstalled()
     {
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -59,10 +76,10 @@ internal static class AgentHookInstaller
         Directory.CreateDirectory(installDirectory);
 
         var targetPath = Path.Combine(installDirectory, BridgeFileName);
-        var sourcePath = Path.Combine(AppContext.BaseDirectory, BridgeFileName);
-        if (File.Exists(sourcePath))
+        var sourceDirectory = FindBridgeSourceDirectory();
+        if (sourceDirectory is not null)
         {
-            foreach (var bridgeFile in Directory.EnumerateFiles(AppContext.BaseDirectory, "liveshelf-bridge.*"))
+            foreach (var bridgeFile in Directory.EnumerateFiles(sourceDirectory, "liveshelf-bridge.*"))
             {
                 File.Copy(
                     bridgeFile,
@@ -78,7 +95,37 @@ internal static class AgentHookInstaller
             return targetPath;
         }
 
-        throw new FileNotFoundException("Live Shelf bridge executable was not found next to the app.", sourcePath);
+        throw new FileNotFoundException(
+            "Live Shelf bridge executable was not found. Build the app once, then try connecting again.",
+            Path.Combine(AppContext.BaseDirectory, BridgeFileName));
+    }
+
+    private static string? FindBridgeSourceDirectory()
+    {
+        if (File.Exists(Path.Combine(AppContext.BaseDirectory, BridgeFileName)))
+        {
+            return AppContext.BaseDirectory;
+        }
+
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        for (var depth = 0; current is not null && depth < 8; depth++, current = current.Parent)
+        {
+            foreach (var candidate in new[]
+                     {
+                         Path.Combine(current.FullName, "src", "LiveShelf.Bridge", "bin", "Debug", "net8.0"),
+                         Path.Combine(current.FullName, "src", "LiveShelf.Bridge", "bin", "Release", "net8.0"),
+                         Path.Combine(current.FullName, "src", "LiveShelf.Bridge", "bin", "Scratch"),
+                         Path.Combine(current.FullName, "src", "LiveShelf", "bin", "Scratch")
+                     })
+            {
+                if (File.Exists(Path.Combine(candidate, BridgeFileName)))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        return null;
     }
 
     private static string BuildBridgeCommand(string bridgePath, string source)
@@ -89,8 +136,16 @@ internal static class AgentHookInstaller
     private static void EnsureCodexHooksFeature(string configPath)
     {
         var text = File.Exists(configPath) ? File.ReadAllText(configPath) : string.Empty;
-        if (text.Contains("codex_hooks", StringComparison.OrdinalIgnoreCase))
+        var existingHooksSetting = Regex.Match(
+            text,
+            @"(?im)^(\s*codex_hooks\s*=\s*)(?:true|false)(\s*(?:#.*)?)$");
+        if (existingHooksSetting.Success)
         {
+            text = Regex.Replace(
+                text,
+                @"(?im)^(\s*codex_hooks\s*=\s*)(?:true|false)(\s*(?:#.*)?)$",
+                "$1true$2");
+            File.WriteAllText(configPath, text);
             return;
         }
 
@@ -186,14 +241,17 @@ internal static class AgentHookInstaller
 
     private static JsonObject BuildCodexHooks(string command)
     {
+        const string toolMatcher =
+            "Bash|Shell|shell_command|functions.shell_command|PowerShell|Cmd|apply_patch|functions.apply_patch|Edit|Write";
+
         return new JsonObject
         {
             ["hooks"] = new JsonObject
             {
                 ["UserPromptSubmit"] = HookArray(command),
-                ["PreToolUse"] = HookArray(command, "Bash|apply_patch|Edit|Write"),
-                ["PostToolUse"] = HookArray(command, "Bash|apply_patch|Edit|Write"),
-                ["PermissionRequest"] = HookArray(command, "Bash|apply_patch|Edit|Write"),
+                ["PreToolUse"] = HookArray(command, toolMatcher),
+                ["PostToolUse"] = HookArray(command, toolMatcher),
+                ["PermissionRequest"] = HookArray(command, toolMatcher),
                 ["Stop"] = HookArray(command)
             }
         };
@@ -201,13 +259,15 @@ internal static class AgentHookInstaller
 
     private static JsonObject BuildClaudeHooks(string command)
     {
+        const string toolMatcher = "Bash|Shell|shell_command|PowerShell|Cmd|Edit|Write";
+
         return new JsonObject
         {
             ["hooks"] = new JsonObject
             {
                 ["UserPromptSubmit"] = HookArray(command),
-                ["PreToolUse"] = HookArray(command, "Bash|Edit|Write"),
-                ["PostToolUse"] = HookArray(command, "Bash|Edit|Write"),
+                ["PreToolUse"] = HookArray(command, toolMatcher),
+                ["PostToolUse"] = HookArray(command, toolMatcher),
                 ["PermissionRequest"] = HookArray(command),
                 ["Notification"] = HookArray(command),
                 ["Stop"] = HookArray(command),
@@ -236,6 +296,67 @@ internal static class AgentHookInstaller
         }
 
         return new JsonArray(entry);
+    }
+
+    private static AgentHookInstallResult TestBridge(string bridgePath, string source)
+    {
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = bridgePath,
+                Arguments = $"--source {source}",
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+
+            using var process = Process.Start(startInfo);
+            if (process is null)
+            {
+                return new AgentHookInstallResult(false, $"Could not start {source} bridge test");
+            }
+
+            var payload = new JsonObject
+            {
+                ["hook_event_name"] = "LiveShelfHookTest",
+                ["session_id"] = $"liveshelf-hook-test-{Guid.NewGuid():N}",
+                ["cwd"] = Environment.CurrentDirectory
+            }.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
+
+            process.StandardInput.Write(payload);
+            process.StandardInput.Close();
+
+            if (!process.WaitForExit(3000))
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException)
+                {
+                }
+
+                return new AgentHookInstallResult(false, $"{FormatSourceName(source)} bridge test timed out");
+            }
+
+            return process.ExitCode == 0
+                ? new AgentHookInstallResult(true, $"{FormatSourceName(source)} bridge test passed")
+                : new AgentHookInstallResult(false, $"{FormatSourceName(source)} bridge exited with code {process.ExitCode}");
+        }
+        catch (Exception ex)
+        {
+            return new AgentHookInstallResult(false, $"{FormatSourceName(source)} bridge test failed: {ex.Message}");
+        }
+    }
+
+    private static string FormatSourceName(string source)
+    {
+        return source.Equals("codex", StringComparison.OrdinalIgnoreCase)
+            ? "Codex"
+            : "Claude";
     }
 }
 

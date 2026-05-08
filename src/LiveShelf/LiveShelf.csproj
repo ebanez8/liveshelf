@@ -17,6 +17,7 @@
   <Target Name="CopyLiveShelfBridge" AfterTargets="Build">
     <ItemGroup>
       <LiveShelfBridgeOutput Include="..\LiveShelf.Bridge\bin\$(Configuration)\net8.0\liveshelf-bridge.*" />
+      <LiveShelfBridgeOutput Include="..\LiveShelf.Bridge\$(OutputPath)liveshelf-bridge.*" />
     </ItemGroup>
     <Copy SourceFiles="@(LiveShelfBridgeOutput)"
           DestinationFolder="$(OutDir)"

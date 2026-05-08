@@ -4,15 +4,24 @@ using System.Text.Json.Nodes;
 
 const string PipeName = "LiveShelfAgentEvents";
 
-var source = ReadSource(args);
-var input = await Console.In.ReadToEndAsync();
-var normalized = NormalizeEvent(source, input);
-var payload = normalized.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
-
-if (!await TrySendToLiveShelfAsync(payload))
+try
 {
-    QueueEvent(payload);
+    var source = ReadSource(args);
+    var input = await Console.In.ReadToEndAsync();
+    var normalized = NormalizeEvent(source, input);
+    var payload = normalized.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
+
+    if (!await TrySendToLiveShelfAsync(payload))
+    {
+        QueueEvent(payload);
+    }
 }
+catch (Exception ex)
+{
+    TryWriteDiagnostic(ex);
+}
+
+Environment.ExitCode = 0;
 
 static string ReadSource(string[] args)
 {
@@ -89,6 +98,10 @@ static async Task<bool> TrySendToLiveShelfAsync(string payload)
     {
         return false;
     }
+    catch (Exception)
+    {
+        return false;
+    }
 }
 
 static void QueueEvent(string payload)
@@ -105,6 +118,26 @@ static void QueueEvent(string payload)
     {
     }
     catch (UnauthorizedAccessException)
+    {
+    }
+    catch (Exception)
+    {
+    }
+}
+
+static void TryWriteDiagnostic(Exception exception)
+{
+    try
+    {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var directory = Path.Combine(localAppData, "LiveShelf");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "bridge-errors.log");
+        File.AppendAllText(
+            path,
+            $"{DateTimeOffset.UtcNow:O} {exception.GetType().Name}: {exception.Message}{Environment.NewLine}");
+    }
+    catch
     {
     }
 }

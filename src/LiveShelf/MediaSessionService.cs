@@ -11,6 +11,7 @@ internal sealed class MediaSessionService : IDisposable
     private static readonly TimeSpan TimelineUpdateInterval = TimeSpan.FromSeconds(1);
 
     private readonly Dictionary<string, GlobalSystemMediaTransportControlsSession> _sessions = [];
+    private readonly MediaTimelineEstimator _timelineEstimator = new();
     private readonly Dispatcher _dispatcher;
     private readonly DispatcherTimer _timelineTimer;
     private GlobalSystemMediaTransportControlsSessionManager? _manager;
@@ -72,6 +73,8 @@ internal sealed class MediaSessionService : IDisposable
             }
 
             QueueRefresh();
+            _ = QueueRefreshAfterAsync(TimeSpan.FromMilliseconds(250));
+            _ = QueueRefreshAfterAsync(TimeSpan.FromMilliseconds(900));
         }
         catch (Exception ex) when (IsRecoverableMediaException(ex))
         {
@@ -100,6 +103,7 @@ internal sealed class MediaSessionService : IDisposable
         }
 
         _sessions.Clear();
+        _timelineEstimator.Clear();
     }
 
     private async Task InitializeAsync()
@@ -120,6 +124,18 @@ internal sealed class MediaSessionService : IDisposable
     private void TimelineTimer_Tick(object? sender, EventArgs e)
     {
         QueueRefresh();
+    }
+
+    private async Task QueueRefreshAfterAsync(TimeSpan delay)
+    {
+        try
+        {
+            await Task.Delay(delay);
+            QueueRefresh();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 
     private void Manager_SessionsChanged(
@@ -243,6 +259,7 @@ internal sealed class MediaSessionService : IDisposable
             {
                 UnsubscribeSession(stale.Value);
                 _sessions.Remove(stale.Key);
+                _timelineEstimator.Remove(stale.Key);
             }
 
             SessionsChanged?.Invoke(this, snapshots);
@@ -285,19 +302,15 @@ internal sealed class MediaSessionService : IDisposable
             var sourceDisplayName = FormatSourceAppName(sourceAppUserModelId);
             var start = timeline.StartTime;
             var end = timeline.EndTime;
-            var position = GetReportedPosition(timeline);
             var duration = end > start ? end - start : TimeSpan.Zero;
-            var elapsed = duration > TimeSpan.Zero ? position - start : position;
-
-            if (elapsed < TimeSpan.Zero)
-            {
-                elapsed = TimeSpan.Zero;
-            }
-
-            if (duration > TimeSpan.Zero && elapsed > duration)
-            {
-                elapsed = duration;
-            }
+            var reportedElapsed = GetReportedElapsed(timeline, start, duration);
+            var elapsed = _timelineEstimator.Resolve(
+                sessionId,
+                reportedElapsed,
+                duration,
+                playbackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing,
+                timeline.LastUpdatedTime,
+                controls.IsPlayPauseToggleEnabled || controls.IsPlayEnabled || controls.IsPauseEnabled);
 
             var progress = duration > TimeSpan.FromSeconds(1)
                 ? Math.Clamp(elapsed.TotalMilliseconds / duration.TotalMilliseconds, 0, 1)
@@ -337,10 +350,16 @@ internal sealed class MediaSessionService : IDisposable
             NullReferenceException;
     }
 
-    private static TimeSpan GetReportedPosition(
-        GlobalSystemMediaTransportControlsSessionTimelineProperties timeline)
+    private static TimeSpan GetReportedElapsed(
+        GlobalSystemMediaTransportControlsSessionTimelineProperties timeline,
+        TimeSpan start,
+        TimeSpan duration)
     {
-        return timeline.Position;
+        var elapsed = duration > TimeSpan.Zero
+            ? timeline.Position - start
+            : timeline.Position;
+
+        return MediaTimelineEstimator.ClampElapsed(elapsed, duration);
     }
 
     private static string GetSessionId(GlobalSystemMediaTransportControlsSession session)

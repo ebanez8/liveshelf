@@ -25,7 +25,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const int ToggleShelfHotkeyVirtualKey = 0x48; // H
     private const int EmergencyRestoreHotkeyVirtualKey = 0x52; // R
 
-    private const double ShelfWidth = 264;
+    private const double ShelfWidth = 256;
     private const double PeekShelfWidth = 440;
     private const double ZoomShelfWidth = 780;
     private const double HiddenOffset = 18;
@@ -39,10 +39,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const int InteractiveActivationDelayMs = 500;
     private const int AttentionAnimationMs = 720;
 
-    private static readonly Color CardBackgroundColor = Color.FromRgb(32, 37, 45);
-    private static readonly Color CardBorderColor = Color.FromRgb(52, 60, 72);
+    private static readonly Color CardBackgroundColor = Color.FromRgb(24, 29, 35);
+    private static readonly Color CardBorderColor = Color.FromRgb(38, 46, 55);
     private static readonly Color AttentionBorderColor = Color.FromRgb(117, 196, 255);
     private static readonly Color AttentionBackgroundColor = Color.FromRgb(38, 49, 61);
+    private static readonly Brush AgentIdleBrush = new SolidColorBrush(Color.FromRgb(145, 156, 172));
+    private static readonly Brush AgentPendingBrush = new SolidColorBrush(Color.FromRgb(255, 196, 87));
+    private static readonly Brush AgentConnectedBrush = new SolidColorBrush(Color.FromRgb(95, 220, 139));
+    private static readonly Brush AgentFailedBrush = new SolidColorBrush(Color.FromRgb(238, 105, 117));
 
     private readonly ObservableCollection<ShelvedWindow> _items = [];
     private readonly Dictionary<ShelvedWindow, FrameworkElement> _cardElements = [];
@@ -64,6 +68,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private int _shelfAnimationGeneration;
     private int _interactiveActivationGeneration;
     private string _statusMessage = "Ready";
+    private string _agentConnectionText = "Connect";
+    private string _agentConnectionToolTip = "Connect Codex or Claude Code hooks";
+    private Brush _agentConnectionBrush = AgentIdleBrush;
 
     public MainWindow()
     {
@@ -404,6 +411,51 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    public string AgentConnectionText
+    {
+        get => _agentConnectionText;
+        private set
+        {
+            if (_agentConnectionText == value)
+            {
+                return;
+            }
+
+            _agentConnectionText = value;
+            OnPropertyChanged(nameof(AgentConnectionText));
+        }
+    }
+
+    public Brush AgentConnectionBrush
+    {
+        get => _agentConnectionBrush;
+        private set
+        {
+            if (_agentConnectionBrush == value)
+            {
+                return;
+            }
+
+            _agentConnectionBrush = value;
+            OnPropertyChanged(nameof(AgentConnectionBrush));
+        }
+    }
+
+    public string AgentConnectionToolTip
+    {
+        get => _agentConnectionToolTip;
+        private set
+        {
+            if (_agentConnectionToolTip == value)
+            {
+                return;
+            }
+
+            _agentConnectionToolTip = value;
+            OnPropertyChanged(nameof(AgentConnectionToolTip));
+        }
+    }
+
     private void AgentsButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { ContextMenu: { } menu } button)
@@ -418,33 +470,61 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void EnableCodexTrackingMenuItem_Click(object sender, RoutedEventArgs e)
     {
-        InstallAgentHooks(AgentHookInstaller.EnableCodexTracking);
+        InstallAgentHooks("Codex", AgentHookInstaller.EnableCodexTracking);
     }
 
     private void EnableClaudeTrackingMenuItem_Click(object sender, RoutedEventArgs e)
     {
-        InstallAgentHooks(AgentHookInstaller.EnableClaudeTracking);
+        InstallAgentHooks("Claude", AgentHookInstaller.EnableClaudeTracking);
+    }
+
+    private void TestCodexTrackingMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        InstallAgentHooks("Codex test", AgentHookInstaller.TestCodexTracking);
+    }
+
+    private void TestClaudeTrackingMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        InstallAgentHooks("Claude test", AgentHookInstaller.TestClaudeTracking);
     }
 
     private void EnableAllAgentTrackingMenuItem_Click(object sender, RoutedEventArgs e)
     {
-        InstallAgentHooks(AgentHookInstaller.EnableAllTracking);
+        InstallAgentHooks("Agents", AgentHookInstaller.EnableAllTracking);
     }
 
-    private void InstallAgentHooks(Func<AgentHookInstallResult> install)
+    private void InstallAgentHooks(string label, Func<AgentHookInstallResult> install)
     {
+        AgentConnectionText = "Installing";
+        AgentConnectionBrush = AgentPendingBrush;
+        AgentConnectionToolTip = $"Installing {label} hooks...";
+
         try
         {
             var result = install();
             StatusMessage = result.Message;
+            AgentConnectionToolTip = result.Message;
             if (!result.Success)
             {
+                AgentConnectionText = "Failed";
+                AgentConnectionBrush = AgentFailedBrush;
                 SystemSounds.Exclamation.Play();
+                return;
             }
+
+            AgentConnectionText = label.EndsWith("test", StringComparison.OrdinalIgnoreCase)
+                ? "Hook OK"
+                : label == "Agents"
+                    ? "Connected"
+                    : $"{label} on";
+            AgentConnectionBrush = AgentConnectedBrush;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
             StatusMessage = ex.Message;
+            AgentConnectionText = "Failed";
+            AgentConnectionBrush = AgentFailedBrush;
+            AgentConnectionToolTip = ex.Message;
             SystemSounds.Exclamation.Play();
         }
     }
@@ -725,7 +805,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         item.MarkAttentionSeen();
         item.IsExpanded = true;
         Panel.SetZIndex(card, 10);
-        AnimateCardTransform(card, scale: 1.012, offsetX: -4, PeekAnimationMs);
+        AnimateCardTransform(card, scale: 1, offsetX: 0, PeekAnimationMs);
         AnimatePreviewHeight(item, PeekPreviewHeight, PeekAnimationMs);
 
         StatusMessage = $"Peeking {item.ProcessName}";
@@ -814,7 +894,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         AnimatePreviewHeight(item, GetZoomPreviewHeight(), ZoomAnimationMs);
         if (_cardElements.TryGetValue(item, out var card))
         {
-            AnimateCardTransform(card, scale: 1.018, offsetX: -6, ZoomAnimationMs);
+            AnimateCardTransform(card, scale: 1, offsetX: 0, ZoomAnimationMs);
         }
 
         StatusMessage = $"Zooming {item.ProcessName}";
@@ -838,7 +918,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (_cardElements.TryGetValue(item, out var card))
         {
-            AnimateCardTransform(card, scale: 1.012, offsetX: -4, ZoomAnimationMs);
+            AnimateCardTransform(card, scale: 1, offsetX: 0, ZoomAnimationMs);
         }
 
         StatusMessage = $"Peeking {item.ProcessName}";
@@ -903,7 +983,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_cardElements.TryGetValue(item, out var card))
         {
             Panel.SetZIndex(card, 10);
-            AnimateCardTransform(card, scale: 1.012, offsetX: -4, PeekAnimationMs);
+            AnimateCardTransform(card, scale: 1, offsetX: 0, PeekAnimationMs);
         }
 
         AnimatePreviewHeight(item, PeekPreviewHeight, PeekAnimationMs);
@@ -935,7 +1015,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (item != _peekedItem)
         {
-            AnimateCardTransform(card, scale: 1.006, offsetX: -3, AttentionAnimationMs / 2);
+            AnimateCardTransform(card, scale: 1, offsetX: 0, AttentionAnimationMs / 2);
             RunAfter(AttentionAnimationMs / 2, () =>
             {
                 if (item != _peekedItem && _cardElements.TryGetValue(item, out var currentCard))
@@ -1038,11 +1118,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
 
             _shelver.UpdateThumbnailDestination(item, thumbnailDestination);
-            if (_pendingInteractiveItem == item && !item.IsInteractive)
-            {
-                _shelver.PrepareInteractiveZoom(item, screenBounds);
-            }
-
             if (item.IsInteractive)
             {
                 _shelver.UpdateInteractiveZoomBounds(item, screenBounds);

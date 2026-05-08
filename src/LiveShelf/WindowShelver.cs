@@ -334,7 +334,10 @@ internal sealed class WindowShelver
         item.IsInteractive = false;
         item.IsPreparingInteractive = false;
         ParkInteractiveSource(item);
+        RefreshThumbnailRegistration(item);
         ThumbnailRefreshRequested?.Invoke(this, EventArgs.Empty);
+        _ = RefreshThumbnailAfterAsync(item, TimeSpan.FromMilliseconds(180), reRegister: false);
+        _ = RefreshThumbnailAfterAsync(item, TimeSpan.FromMilliseconds(650), reRegister: true);
     }
 
     public void ForwardMouseInput(
@@ -651,9 +654,46 @@ internal sealed class WindowShelver
         _dispatcher.InvokeAsync(() => ApplyBridgeEvent(bridgeEvent));
     }
 
+    private async Task RefreshThumbnailAfterAsync(ShelvedWindow item, TimeSpan delay, bool reRegister)
+    {
+        try
+        {
+            await Task.Delay(delay);
+            await _dispatcher.InvokeAsync(() =>
+            {
+                if (!_items.Contains(item) || !item.IsSourceAlive || !NativeMethods.IsWindow(item.SourceHwnd))
+                {
+                    return;
+                }
+
+                if (reRegister)
+                {
+                    RefreshThumbnailRegistration(item);
+                }
+
+                ThumbnailRefreshRequested?.Invoke(this, EventArgs.Empty);
+            });
+        }
+        catch (TaskCanceledException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
+    }
+
     private void AgentEventService_EventReceived(object? sender, AgentEvent agentEvent)
     {
-        _dispatcher.InvokeAsync(() => _agentSessions.ApplyEvent(agentEvent));
+        _dispatcher.InvokeAsync(() =>
+        {
+            if (IsHookSelfTestEvent(agentEvent))
+            {
+                StatusChanged?.Invoke(this, $"{FormatAgentDisplayTitle(agentEvent.Source)} hook test received");
+                return;
+            }
+
+            _agentSessions.ApplyEvent(agentEvent);
+        });
     }
 
     private void AgentSessions_CardUpdateRequested(object? sender, AgentCardUpdate update)
@@ -1660,6 +1700,11 @@ internal sealed class WindowShelver
                token.Contains("stopfailure", StringComparison.Ordinal);
     }
 
+    private static bool IsHookSelfTestEvent(AgentEvent agentEvent)
+    {
+        return agentEvent.EffectiveEventName.Equals("LiveShelfHookTest", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool IsAgentFinalEvent(string eventName)
     {
         var normalized = NormalizeToken(eventName);
@@ -2205,5 +2250,30 @@ internal sealed class WindowShelver
 
         NativeMethods.DwmUnregisterThumbnail(item.ThumbnailHandle);
         item.ThumbnailHandle = IntPtr.Zero;
+    }
+
+    private void RefreshThumbnailRegistration(ShelvedWindow item)
+    {
+        if (!item.IsSourceAlive || !NativeMethods.IsWindow(item.SourceHwnd))
+        {
+            return;
+        }
+
+        var registerResult = NativeMethods.DwmRegisterThumbnail(
+            _shelfHwnd,
+            item.SourceHwnd,
+            out var replacementHandle);
+        if (registerResult < 0 || replacementHandle == IntPtr.Zero)
+        {
+            item.IsSourceAlive = NativeMethods.IsWindow(item.SourceHwnd);
+            return;
+        }
+
+        var oldHandle = item.ThumbnailHandle;
+        item.ThumbnailHandle = replacementHandle;
+        if (oldHandle != IntPtr.Zero)
+        {
+            NativeMethods.DwmUnregisterThumbnail(oldHandle);
+        }
     }
 }
