@@ -48,9 +48,10 @@ static JsonObject NormalizeEvent(string source, string input)
         raw = [];
     }
 
-    var eventName = FirstString(raw, "hook_event_name", "hookEventName", "eventName", "event") ?? "Unknown";
+    var eventName = FirstString(raw, "hook_event_name", "hookEventName", "event_name", "eventName", "event") ?? "Unknown";
     var sessionId =
         FirstString(raw, "session_id", "sessionId") ??
+        FirstString(raw, "conversation_id", "conversationId", "thread_id", "threadId") ??
         FirstString(raw, "transcript_path", "transcriptPath") ??
         FirstString(raw, "cwd") ??
         "unknown";
@@ -59,18 +60,18 @@ static JsonObject NormalizeEvent(string source, string input)
     {
         ["source"] = source,
         ["sessionId"] = sessionId,
-        ["turnId"] = FirstString(raw, "turn_id", "turnId"),
+        ["turnId"] = FirstString(raw, "turn_id", "turnId", "submission_id", "submissionId"),
         ["eventName"] = eventName,
         ["cwd"] = FirstString(raw, "cwd"),
         ["transcriptPath"] = FirstString(raw, "transcript_path", "transcriptPath"),
-        ["toolName"] = FirstString(raw, "tool_name", "toolName", "tool"),
-        ["toolUseId"] = FirstString(raw, "tool_use_id", "toolUseId"),
-        ["toolInput"] = CloneNode(raw, "tool_input", "toolInput", "input"),
-        ["toolResponse"] = CloneNode(raw, "tool_response", "toolResponse", "response"),
+        ["toolName"] = FirstString(raw, "tool_name", "toolName", "tool_slug", "toolSlug", "tool"),
+        ["toolUseId"] = FirstString(raw, "tool_use_id", "toolUseId", "call_id", "callId"),
+        ["toolInput"] = CloneNode(raw, "tool_input", "toolInput", "tool_args", "toolArgs", "arguments", "args", "input"),
+        ["toolResponse"] = CloneNode(raw, "tool_response", "toolResponse", "tool_result", "toolResult", "result", "response", "output"),
         ["lastAssistantMessage"] = FirstString(raw, "last_assistant_message", "lastAssistantMessage"),
-        ["error"] = FirstString(raw, "error", "message"),
-        ["filePath"] = FirstString(raw, "file_path", "filePath", "path"),
-        ["filesChanged"] = FirstInt(raw, "files_changed", "filesChanged"),
+        ["error"] = FirstString(raw, "error", "message", "stderr", "failure"),
+        ["filePath"] = FirstString(raw, "file_path", "filePath", "filename", "path"),
+        ["filesChanged"] = FirstInt(raw, "files_changed", "filesChanged", "changed_files_count", "changedFilesCount"),
         ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
     };
 }
@@ -159,17 +160,10 @@ static string? FirstString(JsonObject root, params string[] names)
     {
         if (TryGetProperty(root, name, out var node))
         {
-            if (node is JsonValue value &&
-                value.TryGetValue<string>(out var text) &&
-                !string.IsNullOrWhiteSpace(text))
+            var text = NodeToString(node);
+            if (!string.IsNullOrWhiteSpace(text))
             {
                 return text;
-            }
-
-            var serialized = node?.ToJsonString();
-            if (!string.IsNullOrWhiteSpace(serialized) && serialized != "null")
-            {
-                return serialized;
             }
         }
     }
@@ -182,8 +176,7 @@ static int? FirstInt(JsonObject root, params string[] names)
     foreach (var name in names)
     {
         if (TryGetProperty(root, name, out var node) &&
-            node is JsonValue value &&
-            value.TryGetValue<int>(out var number))
+            NodeToInt(node) is int number)
         {
             return number;
         }
@@ -207,6 +200,16 @@ static JsonNode? CloneNode(JsonObject root, params string[] names)
 
 static bool TryGetProperty(JsonObject root, string name, out JsonNode? value)
 {
+    if (TryGetDirectProperty(root, name, out value))
+    {
+        return true;
+    }
+
+    return TryFindProperty(root, name, depth: 0, maxDepth: 8, out value);
+}
+
+static bool TryGetDirectProperty(JsonObject root, string name, out JsonNode? value)
+{
     if (root.TryGetPropertyValue(name, out value))
     {
         return true;
@@ -223,4 +226,84 @@ static bool TryGetProperty(JsonObject root, string name, out JsonNode? value)
 
     value = null;
     return false;
+}
+
+static bool TryFindProperty(JsonNode? node, string name, int depth, int maxDepth, out JsonNode? value)
+{
+    if (depth > maxDepth)
+    {
+        value = null;
+        return false;
+    }
+
+    if (node is JsonObject obj)
+    {
+        foreach (var pair in obj)
+        {
+            if (string.Equals(pair.Key, name, StringComparison.OrdinalIgnoreCase))
+            {
+                value = pair.Value;
+                return true;
+            }
+        }
+
+        foreach (var pair in obj)
+        {
+            if (TryFindProperty(pair.Value, name, depth + 1, maxDepth, out value))
+            {
+                return true;
+            }
+        }
+    }
+    else if (node is JsonArray array)
+    {
+        foreach (var item in array)
+        {
+            if (TryFindProperty(item, name, depth + 1, maxDepth, out value))
+            {
+                return true;
+            }
+        }
+    }
+
+    value = null;
+    return false;
+}
+
+static string? NodeToString(JsonNode? node)
+{
+    if (node is JsonValue value)
+    {
+        if (value.TryGetValue<string>(out var text))
+        {
+            return string.IsNullOrWhiteSpace(text) ? null : text;
+        }
+
+        var serializedValue = value.ToJsonString();
+        return string.IsNullOrWhiteSpace(serializedValue) || serializedValue == "null" ? null : serializedValue;
+    }
+
+    if (node is JsonObject obj && TryGetDirectProperty(obj, "name", out var named))
+    {
+        return NodeToString(named);
+    }
+
+    return null;
+}
+
+static int? NodeToInt(JsonNode? node)
+{
+    if (node is not JsonValue value)
+    {
+        return null;
+    }
+
+    if (value.TryGetValue<int>(out var number))
+    {
+        return number;
+    }
+
+    return value.TryGetValue<string>(out var text) && int.TryParse(text, out var parsed)
+        ? parsed
+        : null;
 }

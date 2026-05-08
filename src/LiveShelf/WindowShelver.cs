@@ -12,6 +12,10 @@ internal sealed class WindowShelver
     private static readonly TimeSpan ContentProbeInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan AgentStableDoneDelay = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan StableDoneDelay = TimeSpan.FromSeconds(9);
+    private static readonly TimeSpan MediaThumbnailRecoveryDelay = TimeSpan.FromMilliseconds(350);
+    private static readonly TimeSpan PreviewRecoveryCooldown = TimeSpan.FromMilliseconds(700);
+    private const int BadPreviewSamplesBeforeRecovery = 3;
+    private const int MaxPreviewRecoveryAttempts = 2;
 
     private readonly IntPtr _shelfHwnd;
     private readonly ObservableCollection<ShelvedWindow> _items;
@@ -97,7 +101,16 @@ internal sealed class WindowShelver
         var registerResult = NativeMethods.DwmRegisterThumbnail(_shelfHwnd, sourceHwnd, out var thumbnailHandle);
         NativeMethods.ThrowForHResult("DwmRegisterThumbnail", registerResult);
 
-        var item = new ShelvedWindow(sourceHwnd, thumbnailHandle, placement, title, processName, processId);
+        var sourcePolicy = SourceWindowPolicyRules.Classify(processName, isMediaCard: false);
+        var item = new ShelvedWindow(
+            sourceHwnd,
+            thumbnailHandle,
+            placement,
+            title,
+            processName,
+            processId,
+            currentRect,
+            sourcePolicy);
         item.SuppressFocusAlertsUntilUtc = DateTime.UtcNow.Add(InitialFocusSuppression);
         item.ExePath = NativeMethods.GetProcessExePath(processId);
         var initialText = WindowContentProbe.TryCapture(sourceHwnd)?.Text ?? string.Empty;
@@ -108,7 +121,7 @@ internal sealed class WindowShelver
         try
         {
             ShelvedWindowRegistry.AddOrUpdate(item);
-            item.ParkedBounds = ParkSourceWindow(sourceHwnd, currentRect);
+            item.ParkedBounds = ParkSourceWindow(item);
             _items.Add(item);
             _agentSessions.TryAutoLinkCard(item);
             _mediaSessionService.RefreshSoon();
@@ -238,27 +251,55 @@ internal sealed class WindowShelver
 
     public void UpdateThumbnailDestination(ShelvedWindow item, NativeMethods.RECT destination)
     {
-        if (item.ThumbnailHandle == IntPtr.Zero || !item.IsSourceAlive)
+        if (!item.IsSourceAlive)
         {
             return;
         }
 
-        var queryResult = NativeMethods.DwmQueryThumbnailSourceSize(item.ThumbnailHandle, out var sourceSize);
-        if (queryResult >= 0)
+        if (item.ThumbnailHandle == IntPtr.Zero)
         {
-            destination = NativeMethods.FitInside(destination, sourceSize);
+            RecordBadPreviewSample(item, "Live preview unavailable");
+            return;
+        }
+
+        if (item.IsPreviewStatusOnly)
+        {
+            UpdateThumbnailVisibility(item, visible: false);
+            return;
+        }
+
+        var queryResult = NativeMethods.DwmQueryThumbnailSourceSize(item.ThumbnailHandle, out var sourceSize);
+        var hasSourceSize = queryResult >= 0 && DwmThumbnailLayout.HasUsableSourceSize(sourceSize);
+        if (hasSourceSize)
+        {
+            destination = DwmThumbnailLayout.ComputeContainDestination(destination, sourceSize);
+            ObserveThumbnailSourceSize(item, sourceSize);
+        }
+        else
+        {
+            RecordBadPreviewSample(item, "Live preview source unavailable");
+        }
+
+        var flags =
+            NativeMethods.DWM_TNP_RECTDESTINATION |
+            NativeMethods.DWM_TNP_VISIBLE |
+            NativeMethods.DWM_TNP_OPACITY |
+            NativeMethods.DWM_TNP_SOURCECLIENTAREAONLY;
+
+        var sourceRect = default(NativeMethods.RECT);
+        if (hasSourceSize)
+        {
+            flags |= NativeMethods.DWM_TNP_RECTSOURCE;
+            sourceRect = DwmThumbnailLayout.GetFullSourceRect(sourceSize);
         }
 
         var properties = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
         {
-            dwFlags =
-                NativeMethods.DWM_TNP_RECTDESTINATION |
-                NativeMethods.DWM_TNP_VISIBLE |
-                NativeMethods.DWM_TNP_OPACITY |
-                NativeMethods.DWM_TNP_SOURCECLIENTAREAONLY,
+            dwFlags = flags,
             rcDestination = destination,
-            opacity = _thumbnailsVisible && !item.IsInteractive ? (byte)255 : (byte)0,
-            fVisible = _thumbnailsVisible && !item.IsInteractive,
+            rcSource = sourceRect,
+            opacity = _thumbnailsVisible && ShouldShowThumbnail(item) ? (byte)255 : (byte)0,
+            fVisible = _thumbnailsVisible && ShouldShowThumbnail(item),
             fSourceClientAreaOnly = false
         };
 
@@ -266,6 +307,7 @@ internal sealed class WindowShelver
         if (updateResult < 0)
         {
             item.IsSourceAlive = NativeMethods.IsWindow(item.SourceHwnd);
+            RecordBadPreviewSample(item, "Live preview refresh failed");
         }
     }
 
@@ -334,10 +376,15 @@ internal sealed class WindowShelver
         item.IsInteractive = false;
         item.IsPreparingInteractive = false;
         ParkInteractiveSource(item);
-        RefreshThumbnailRegistration(item);
+        RefreshThumbnailRegistration(
+            item,
+            unregisterFirst: item.SourceWindowPolicy == SourceWindowPolicy.Media);
         ThumbnailRefreshRequested?.Invoke(this, EventArgs.Empty);
-        _ = RefreshThumbnailAfterAsync(item, TimeSpan.FromMilliseconds(180), reRegister: false);
-        _ = RefreshThumbnailAfterAsync(item, TimeSpan.FromMilliseconds(650), reRegister: true);
+        _ = RefreshThumbnailAfterAsync(item, MediaThumbnailRecoveryDelay, reRegister: false);
+        if (item.SourceWindowPolicy != SourceWindowPolicy.Media)
+        {
+            _ = RefreshThumbnailAfterAsync(item, TimeSpan.FromMilliseconds(650), reRegister: true);
+        }
     }
 
     public void ForwardMouseInput(
@@ -416,7 +463,7 @@ internal sealed class WindowShelver
             return;
         }
 
-        visible &= !item.IsInteractive;
+        visible &= ShouldShowThumbnail(item);
         var properties = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
         {
             dwFlags = NativeMethods.DWM_TNP_VISIBLE | NativeMethods.DWM_TNP_OPACITY,
@@ -427,7 +474,29 @@ internal sealed class WindowShelver
         NativeMethods.DwmUpdateThumbnailProperties(item.ThumbnailHandle, ref properties);
     }
 
-    private static NativeMethods.RECT ParkSourceWindow(IntPtr sourceHwnd, NativeMethods.RECT currentRect)
+    private static bool ShouldShowThumbnail(ShelvedWindow item)
+    {
+        if (item.IsPreviewStatusOnly)
+        {
+            return false;
+        }
+
+        return !item.IsInteractive ||
+               SourceWindowPolicyRules.KeepsLiveThumbnailVisibleWhenInteractive(item.SourceWindowPolicy);
+    }
+
+    private static NativeMethods.RECT ParkSourceWindow(
+        ShelvedWindow item,
+        bool allowLivePreviewMoveToOriginal = false)
+    {
+        return SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy)
+            ? ParkLivePreviewSourceWindow(item, allowLivePreviewMoveToOriginal)
+            : ParkNormalSourceWindow(item.SourceHwnd, item.OriginalSourceRect);
+    }
+
+    private static NativeMethods.RECT ParkNormalSourceWindow(
+        IntPtr sourceHwnd,
+        NativeMethods.RECT currentRect)
     {
         var parkedRect = GetParkedSourceRect(currentRect);
 
@@ -449,12 +518,50 @@ internal sealed class WindowShelver
                 parkedRect.Top,
                 parkedRect.Width,
                 parkedRect.Height,
-                NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER | NativeMethods.SWP_SHOWWINDOW))
+                SourceWindowPolicyRules.GetNormalParkFlags()))
         {
             NativeMethods.ThrowLastWin32Error("SetWindowPos");
         }
 
         return parkedRect;
+    }
+
+    private static NativeMethods.RECT ParkLivePreviewSourceWindow(
+        ShelvedWindow item,
+        bool allowMoveToOriginal = false)
+    {
+        NativeMethods.SetWindowPos(
+            item.SourceHwnd,
+            NativeMethods.HWND_NOTOPMOST,
+            0,
+            0,
+            0,
+            0,
+            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE);
+
+        var flags = SourceWindowPolicyRules.GetLivePreviewParkFlags();
+        var x = 0;
+        var y = 0;
+        if (allowMoveToOriginal)
+        {
+            flags = SourceWindowPolicyRules.GetLivePreviewMoveToOriginalFlags();
+            x = item.OriginalSourceRect.Left;
+            y = item.OriginalSourceRect.Top;
+        }
+
+        if (!NativeMethods.SetWindowPos(
+                item.SourceHwnd,
+                NativeMethods.HWND_BOTTOM,
+                x,
+                y,
+                0,
+                0,
+                flags))
+        {
+            NativeMethods.ThrowLastWin32Error("SetWindowPos");
+        }
+
+        return item.OriginalSourceRect;
     }
 
     private static NativeMethods.RECT GetParkedSourceRect(NativeMethods.RECT currentRect)
@@ -480,6 +587,12 @@ internal sealed class WindowShelver
         }
 
         item.InteractiveBounds = screenBounds;
+        if (SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy))
+        {
+            PositionLivePreviewInteractiveSource(item);
+            return;
+        }
+
         NativeMethods.ShowWindow(item.SourceHwnd, NativeMethods.SW_RESTORE);
         NativeMethods.SetWindowPos(
             item.SourceHwnd,
@@ -503,6 +616,13 @@ internal sealed class WindowShelver
             return;
         }
 
+        if (SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy))
+        {
+            item.InteractiveBounds = screenBounds;
+            PositionLivePreviewInteractiveSource(item);
+            return;
+        }
+
         var parkedBounds = item.ParkedBounds.Width > 0 && item.ParkedBounds.Height > 0
             ? item.ParkedBounds
             : GetParkedSourceRect(item.OriginalPlacement.NormalPosition);
@@ -523,6 +643,14 @@ internal sealed class WindowShelver
 
     private static void ParkInteractiveSource(ShelvedWindow item)
     {
+        if (SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy))
+        {
+            item.ParkedBounds = ParkLivePreviewSourceWindow(item);
+            item.IsPreparingInteractive = false;
+            item.InteractiveBounds = default;
+            return;
+        }
+
         var parkedBounds = item.ParkedBounds.Width > 0 && item.ParkedBounds.Height > 0
             ? item.ParkedBounds
             : GetParkedSourceRect(item.OriginalPlacement.NormalPosition);
@@ -537,6 +665,18 @@ internal sealed class WindowShelver
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER | NativeMethods.SWP_SHOWWINDOW);
         item.IsPreparingInteractive = false;
         item.InteractiveBounds = default;
+    }
+
+    private static void PositionLivePreviewInteractiveSource(ShelvedWindow item)
+    {
+        NativeMethods.SetWindowPos(
+            item.SourceHwnd,
+            NativeMethods.HWND_BOTTOM,
+            0,
+            0,
+            0,
+            0,
+            SourceWindowPolicyRules.GetLivePreviewInteractiveFlags());
     }
 
     private void RestoreForShutdown(ShelvedWindow item)
@@ -608,8 +748,10 @@ internal sealed class WindowShelver
             }
 
             item.IsSourceAlive = true;
+            ObserveLivePreviewSourceWindow(item, virtualScreen);
 
             if (!item.IsInteractive &&
+                !SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy) &&
                 !item.HasLinkedAgentSession &&
                 foregroundWindow == item.SourceHwnd &&
                 _lastForegroundWindow != item.SourceHwnd &&
@@ -619,6 +761,7 @@ internal sealed class WindowShelver
             }
 
             if (!item.IsInteractive &&
+                !SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy) &&
                 !item.HasLinkedAgentSession &&
                 NativeMethods.GetWindowRect(item.SourceHwnd, out var sourceRect) &&
                 IsMeaningfullyVisible(sourceRect, virtualScreen))
@@ -680,6 +823,100 @@ internal sealed class WindowShelver
         catch (InvalidOperationException)
         {
         }
+    }
+
+    private void ObserveThumbnailSourceSize(ShelvedWindow item, NativeMethods.SIZE sourceSize)
+    {
+        item.LastThumbnailSourceSize = sourceSize;
+        if (!SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy))
+        {
+            return;
+        }
+
+        if (DwmThumbnailLayout.IsSeverelyWrongSourceSize(sourceSize, item.OriginalSourceRect))
+        {
+            RecordBadPreviewSample(item, "Live preview source resized unexpectedly");
+            return;
+        }
+
+        item.LivePreviewFailureCount = 0;
+    }
+
+    private void ObserveLivePreviewSourceWindow(
+        ShelvedWindow item,
+        NativeMethods.RECT virtualScreen)
+    {
+        if (!SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy) ||
+            item.IsPreviewStatusOnly ||
+            !NativeMethods.GetWindowRect(item.SourceHwnd, out var sourceRect))
+        {
+            return;
+        }
+
+        if (DwmThumbnailLayout.IsSeverelyWrongSourceSize(
+                new NativeMethods.SIZE { Width = sourceRect.Width, Height = sourceRect.Height },
+                item.OriginalSourceRect))
+        {
+            RecordBadPreviewSample(item, "Live preview source rect changed unexpectedly");
+            return;
+        }
+
+        if (!IsMeaningfullyVisible(sourceRect, virtualScreen))
+        {
+            RecordBadPreviewSample(item, "Live preview source was parked offscreen");
+        }
+    }
+
+    private void RecordBadPreviewSample(ShelvedWindow item, string reason)
+    {
+        if (!SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy) ||
+            item.IsPreviewStatusOnly)
+        {
+            return;
+        }
+
+        item.LivePreviewFailureCount++;
+        if (item.LivePreviewFailureCount < BadPreviewSamplesBeforeRecovery)
+        {
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        if (item.LivePreviewRecoveryAttempts < MaxPreviewRecoveryAttempts &&
+            now - item.LastPreviewRecoveryUtc >= PreviewRecoveryCooldown)
+        {
+            item.LivePreviewFailureCount = 0;
+            item.LivePreviewRecoveryAttempts++;
+            item.LastPreviewRecoveryUtc = now;
+            RefreshThumbnailRegistration(
+                item,
+                unregisterFirst: item.SourceWindowPolicy == SourceWindowPolicy.Media);
+            ThumbnailRefreshRequested?.Invoke(this, EventArgs.Empty);
+            _ = RefreshThumbnailAfterAsync(item, MediaThumbnailRecoveryDelay, reRegister: false);
+            return;
+        }
+
+        var fallbackReason = item.IsMediaCard && item.BadgeKind == ShelfBadgeKind.Playing
+            ? "Live preview stalled while media is playing"
+            : reason;
+        item.DowngradeToStatusOnlyPreview(fallbackReason);
+        UpdateThumbnailVisibility(item, visible: false);
+        ThumbnailRefreshRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void RequestMediaThumbnailRecovery(ShelvedWindow item)
+    {
+        if (!item.IsSourceAlive || !NativeMethods.IsWindow(item.SourceHwnd))
+        {
+            return;
+        }
+
+        item.LivePreviewFailureCount = 0;
+        RefreshThumbnailRegistration(
+            item,
+            unregisterFirst: item.SourceWindowPolicy == SourceWindowPolicy.Media);
+        ThumbnailRefreshRequested?.Invoke(this, EventArgs.Empty);
+        _ = RefreshThumbnailAfterAsync(item, MediaThumbnailRecoveryDelay, reRegister: false);
     }
 
     private void AgentEventService_EventReceived(object? sender, AgentEvent agentEvent)
@@ -870,14 +1107,14 @@ internal sealed class WindowShelver
         {
             if (!CanBecomeMediaCard(item))
             {
-                item.ClearMediaStatus();
+                ClearMediaStatus(item);
                 continue;
             }
 
             var match = FindBestMediaSessionMatch(item, sessions, assignedSessionIds);
             if (match is null)
             {
-                item.ClearMediaStatus();
+                ClearMediaStatus(item);
                 continue;
             }
 
@@ -1063,8 +1300,10 @@ internal sealed class WindowShelver
                text.Contains("SoundCloud", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void ApplyMediaStatus(ShelvedWindow item, MediaSessionSnapshot session)
+    private void ApplyMediaStatus(ShelvedWindow item, MediaSessionSnapshot session)
     {
+        var previousPolicy = item.SourceWindowPolicy;
+        var wasMediaCard = item.IsMediaCard;
         var kind = session.IsPlaying
             ? ShelfBadgeKind.Playing
             : session.IsPaused
@@ -1084,6 +1323,59 @@ internal sealed class WindowShelver
             session.Progress,
             hasReliableProgress,
             session.CanTogglePlayPause);
+
+        item.SetSourceWindowPolicy(SourceWindowPolicyRules.Classify(item.ProcessName, item.IsMediaCard));
+        if (item.SourceWindowPolicy != previousPolicy)
+        {
+            ApplySourceWindowPolicyTransition(item, previousPolicy);
+        }
+
+        if (!wasMediaCard && item.SourceWindowPolicy == previousPolicy)
+        {
+            RequestMediaThumbnailRecovery(item);
+        }
+    }
+
+    private void ClearMediaStatus(ShelvedWindow item)
+    {
+        if (!item.IsMediaCard)
+        {
+            return;
+        }
+
+        var previousPolicy = item.SourceWindowPolicy;
+        item.ClearMediaStatus();
+        item.SetSourceWindowPolicy(SourceWindowPolicyRules.Classify(item.ProcessName, item.IsMediaCard));
+
+        if (!SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy))
+        {
+            item.ClearStatusOnlyPreview();
+        }
+
+        if (item.SourceWindowPolicy != previousPolicy)
+        {
+            ApplySourceWindowPolicyTransition(item, previousPolicy);
+        }
+    }
+
+    private void ApplySourceWindowPolicyTransition(
+        ShelvedWindow item,
+        SourceWindowPolicy previousPolicy)
+    {
+        if (!item.IsSourceAlive || !NativeMethods.IsWindow(item.SourceHwnd))
+        {
+            return;
+        }
+
+        item.ParkedBounds = ParkSourceWindow(
+            item,
+            allowLivePreviewMoveToOriginal: SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy));
+
+        if (SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy) ||
+            SourceWindowPolicyRules.RequiresSourceSizePreservation(previousPolicy))
+        {
+            RequestMediaThumbnailRecovery(item);
+        }
     }
 
     private static bool HasReliableMediaProgress(ShelvedWindow item, MediaSessionSnapshot session)
@@ -2020,11 +2312,7 @@ internal sealed class WindowShelver
 
     private static bool IsBrowserProcess(string processName)
     {
-        return processName.Contains("chrome", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("msedge", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("firefox", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("brave", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("opera", StringComparison.OrdinalIgnoreCase);
+        return SourceWindowPolicyRules.IsBrowserProcess(processName);
     }
 
     private static string Tail(string text, int length)
@@ -2118,7 +2406,11 @@ internal sealed class WindowShelver
 
     private static void PrepareSourceForInput(ShelvedWindow item, IntPtr target)
     {
-        NativeMethods.SetForegroundWindow(item.SourceHwnd);
+        if (!SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy))
+        {
+            NativeMethods.SetForegroundWindow(item.SourceHwnd);
+        }
+
         NativeMethods.SetFocus(target == IntPtr.Zero ? item.SourceHwnd : target);
     }
 
@@ -2252,11 +2544,19 @@ internal sealed class WindowShelver
         item.ThumbnailHandle = IntPtr.Zero;
     }
 
-    private void RefreshThumbnailRegistration(ShelvedWindow item)
+    private void RefreshThumbnailRegistration(ShelvedWindow item, bool unregisterFirst = false)
     {
         if (!item.IsSourceAlive || !NativeMethods.IsWindow(item.SourceHwnd))
         {
             return;
+        }
+
+        var oldHandle = item.ThumbnailHandle;
+        if (unregisterFirst && oldHandle != IntPtr.Zero)
+        {
+            NativeMethods.DwmUnregisterThumbnail(oldHandle);
+            item.ThumbnailHandle = IntPtr.Zero;
+            oldHandle = IntPtr.Zero;
         }
 
         var registerResult = NativeMethods.DwmRegisterThumbnail(
@@ -2269,7 +2569,6 @@ internal sealed class WindowShelver
             return;
         }
 
-        var oldHandle = item.ThumbnailHandle;
         item.ThumbnailHandle = replacementHandle;
         if (oldHandle != IntPtr.Zero)
         {

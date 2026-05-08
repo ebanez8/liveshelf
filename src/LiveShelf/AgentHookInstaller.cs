@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -9,6 +10,7 @@ namespace LiveShelf;
 internal static class AgentHookInstaller
 {
     private const string BridgeFileName = "liveshelf-bridge.exe";
+    private const string CodexShimFileName = "liveshelf-codex-hook.cmd";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -18,6 +20,7 @@ internal static class AgentHookInstaller
     public static AgentHookInstallResult EnableCodexTracking()
     {
         var bridgePath = EnsureBridgeInstalled();
+        var shimPath = EnsureCodexHookShim(bridgePath);
         var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var codexDirectory = Path.Combine(profile, ".codex");
         Directory.CreateDirectory(codexDirectory);
@@ -25,7 +28,7 @@ internal static class AgentHookInstaller
         EnsureCodexHooksFeature(Path.Combine(codexDirectory, "config.toml"));
         WriteHookConfig(
             Path.Combine(codexDirectory, "hooks.json"),
-            BuildCodexHooks(BuildBridgeCommand(bridgePath, "codex")));
+            BuildCodexHooks(BuildCodexShimCommand(shimPath)));
 
         var test = TestBridge(bridgePath, "codex");
         return test.Success
@@ -133,39 +136,35 @@ internal static class AgentHookInstaller
         return $"\"{bridgePath}\" --source {source}";
     }
 
+    private static string EnsureCodexHookShim(string bridgePath)
+    {
+        var directory = Path.GetDirectoryName(bridgePath)
+            ?? throw new DirectoryNotFoundException("Live Shelf bridge install directory was not found.");
+        Directory.CreateDirectory(directory);
+
+        var shimPath = Path.Combine(directory, CodexShimFileName);
+        var content = string.Join(
+            Environment.NewLine,
+            [
+                "@echo off",
+                $"\"{bridgePath}\" --source codex",
+                "exit /b 0",
+                string.Empty
+            ]);
+        File.WriteAllText(shimPath, content, Encoding.ASCII);
+        return shimPath;
+    }
+
+    private static string BuildCodexShimCommand(string shimPath)
+    {
+        return $"cmd.exe /d /c call \"{shimPath}\"";
+    }
+
     private static void EnsureCodexHooksFeature(string configPath)
     {
         var text = File.Exists(configPath) ? File.ReadAllText(configPath) : string.Empty;
-        var existingHooksSetting = Regex.Match(
-            text,
-            @"(?im)^(\s*codex_hooks\s*=\s*)(?:true|false)(\s*(?:#.*)?)$");
-        if (existingHooksSetting.Success)
-        {
-            text = Regex.Replace(
-                text,
-                @"(?im)^(\s*codex_hooks\s*=\s*)(?:true|false)(\s*(?:#.*)?)$",
-                "$1true$2");
-            File.WriteAllText(configPath, text);
-            return;
-        }
-
-        var featuresMatch = Regex.Match(text, @"(?m)^\s*\[features\]\s*$");
-        if (featuresMatch.Success)
-        {
-            var insertAt = featuresMatch.Index + featuresMatch.Length;
-            text = text.Insert(insertAt, Environment.NewLine + "codex_hooks = true");
-            File.WriteAllText(configPath, text);
-            return;
-        }
-
-        if (text.Length > 0 && !text.EndsWith(Environment.NewLine, StringComparison.Ordinal))
-        {
-            text += Environment.NewLine;
-        }
-
-        text += "[features]" + Environment.NewLine;
-        text += "codex_hooks = true" + Environment.NewLine;
-        File.WriteAllText(configPath, text);
+        var updated = SetFeatureFlag(text, "hooks", "true", removeKeys: ["codex_hooks"]);
+        File.WriteAllText(configPath, updated);
     }
 
     private static void WriteHookConfig(string path, JsonObject desiredHooks)
@@ -236,22 +235,24 @@ internal static class AgentHookInstaller
 
     private static bool ContainsLiveShelfBridge(JsonNode? node)
     {
-        return node?.ToJsonString().Contains(BridgeFileName, StringComparison.OrdinalIgnoreCase) == true;
+        var text = node?.ToJsonString();
+        return text?.Contains(BridgeFileName, StringComparison.OrdinalIgnoreCase) == true ||
+               text?.Contains(CodexShimFileName, StringComparison.OrdinalIgnoreCase) == true;
     }
 
     private static JsonObject BuildCodexHooks(string command)
     {
-        const string toolMatcher =
-            "Bash|Shell|shell_command|functions.shell_command|PowerShell|Cmd|apply_patch|functions.apply_patch|Edit|Write";
+        const string toolMatcher = ".*";
 
         return new JsonObject
         {
             ["hooks"] = new JsonObject
             {
+                ["SessionStart"] = HookArray(command, timeoutSeconds: 5),
                 ["UserPromptSubmit"] = HookArray(command),
-                ["PreToolUse"] = HookArray(command, toolMatcher),
-                ["PostToolUse"] = HookArray(command, toolMatcher),
-                ["PermissionRequest"] = HookArray(command, toolMatcher),
+                ["PreToolUse"] = HookArray(command, toolMatcher, timeoutSeconds: 5),
+                ["PostToolUse"] = HookArray(command, toolMatcher, timeoutSeconds: 5),
+                ["PermissionRequest"] = HookArray(command, timeoutSeconds: 5),
                 ["Stop"] = HookArray(command)
             }
         };
@@ -276,17 +277,23 @@ internal static class AgentHookInstaller
         };
     }
 
-    private static JsonArray HookArray(string command, string matcher = "")
+    private static JsonArray HookArray(string command, string matcher = "", int? timeoutSeconds = null)
     {
+        var hook = new JsonObject
+        {
+            ["type"] = "command",
+            ["command"] = command
+        };
+        if (timeoutSeconds is > 0)
+        {
+            hook["timeout"] = timeoutSeconds.Value;
+        }
+
         var entry = new JsonObject
         {
             ["hooks"] = new JsonArray
             {
-                new JsonObject
-                {
-                    ["type"] = "command",
-                    ["command"] = command
-                }
+                hook
             }
         };
 
@@ -296,6 +303,98 @@ internal static class AgentHookInstaller
         }
 
         return new JsonArray(entry);
+    }
+
+    private static string SetFeatureFlag(
+        string text,
+        string key,
+        string value,
+        IReadOnlyCollection<string>? removeKeys = null)
+    {
+        var newline = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        var lines = Regex.Split(text, "\r\n|\n").ToList();
+        if (lines.Count > 0 && lines[^1].Length == 0)
+        {
+            lines.RemoveAt(lines.Count - 1);
+        }
+
+        var featuresStart = -1;
+        var featuresEnd = lines.Count;
+        for (var i = 0; i < lines.Count; i++)
+        {
+            if (!Regex.IsMatch(lines[i], @"^\s*\[features\]\s*(?:#.*)?$", RegexOptions.IgnoreCase))
+            {
+                continue;
+            }
+
+            featuresStart = i;
+            featuresEnd = lines.Count;
+            for (var j = i + 1; j < lines.Count; j++)
+            {
+                if (Regex.IsMatch(lines[j], @"^\s*\[[^\]]+\]\s*(?:#.*)?$"))
+                {
+                    featuresEnd = j;
+                    break;
+                }
+            }
+
+            break;
+        }
+
+        if (featuresStart < 0)
+        {
+            if (lines.Count > 0 && !string.IsNullOrWhiteSpace(lines[^1]))
+            {
+                lines.Add(string.Empty);
+            }
+
+            lines.Add("[features]");
+            lines.Add($"{key} = {value}");
+            return string.Join(newline, lines) + newline;
+        }
+
+        var keysToRemove = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (removeKeys is not null)
+        {
+            foreach (var removeKey in removeKeys)
+            {
+                keysToRemove.Add(removeKey);
+            }
+        }
+
+        var insertedOrUpdated = false;
+        for (var i = featuresStart + 1; i < featuresEnd; i++)
+        {
+            var line = lines[i];
+            var keyMatch = Regex.Match(line, @"^\s*([A-Za-z0-9_.-]+)\s*=");
+            if (!keyMatch.Success)
+            {
+                continue;
+            }
+
+            var currentKey = keyMatch.Groups[1].Value;
+            if (keysToRemove.Contains(currentKey))
+            {
+                lines.RemoveAt(i);
+                i--;
+                featuresEnd--;
+                continue;
+            }
+
+            if (string.Equals(currentKey, key, StringComparison.OrdinalIgnoreCase))
+            {
+                var commentMatch = Regex.Match(line, @"(\s+#.*)$");
+                lines[i] = $"{key} = {value}{commentMatch.Value}";
+                insertedOrUpdated = true;
+            }
+        }
+
+        if (!insertedOrUpdated)
+        {
+            lines.Insert(featuresStart + 1, $"{key} = {value}");
+        }
+
+        return string.Join(newline, lines) + newline;
     }
 
     private static AgentHookInstallResult TestBridge(string bridgePath, string source)

@@ -31,6 +31,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     private string _agentDisplayTitle = string.Empty;
     private string _exePath = string.Empty;
     private string _mediaPlayPauseText = "Play";
+    private string _previewStatusReason = string.Empty;
     private double _mediaProgressPercent;
     private Brush _badgeBrush = EmptyBadgeBrush;
     private ShelfBadgeKind _badgeKind = ShelfBadgeKind.None;
@@ -41,6 +42,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     private bool _isMediaCard;
     private bool _hasMediaProgress;
     private bool _canToggleMediaPlayback;
+    private bool _isPreviewStatusOnly;
 
     internal ShelvedWindow(
         IntPtr sourceHwnd,
@@ -48,11 +50,15 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
         NativeMethods.WINDOWPLACEMENT originalPlacement,
         string title,
         string processName,
-        int sourceProcessId)
+        int sourceProcessId,
+        NativeMethods.RECT originalSourceRect,
+        SourceWindowPolicy sourceWindowPolicy)
     {
         SourceHwnd = sourceHwnd;
         ThumbnailHandle = thumbnailHandle;
         OriginalPlacement = originalPlacement;
+        OriginalSourceRect = originalSourceRect;
+        SourceWindowPolicy = sourceWindowPolicy;
         _title = string.IsNullOrWhiteSpace(title) ? processName : title;
         ProcessName = processName;
         SourceProcessId = sourceProcessId;
@@ -68,6 +74,10 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
     internal NativeMethods.WINDOWPLACEMENT OriginalPlacement { get; }
 
+    internal NativeMethods.RECT OriginalSourceRect { get; }
+
+    internal SourceWindowPolicy SourceWindowPolicy { get; private set; }
+
     internal IntPtr LastInputTargetHwnd { get; set; }
 
     internal NativeMethods.RECT ParkedBounds { get; set; }
@@ -75,6 +85,14 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     internal NativeMethods.RECT InteractiveBounds { get; set; }
 
     internal bool IsPreparingInteractive { get; set; }
+
+    internal int LivePreviewFailureCount { get; set; }
+
+    internal int LivePreviewRecoveryAttempts { get; set; }
+
+    internal NativeMethods.SIZE LastThumbnailSourceSize { get; set; }
+
+    internal DateTime LastPreviewRecoveryUtc { get; set; }
 
     internal string MediaSessionId => _mediaSessionId;
 
@@ -446,6 +464,62 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     public string InteractionText => IsInteractive ? "Exit" : "Use";
 
     public string ZoomText => IsZoomed ? "Max" : "Zoom";
+
+    public bool IsPreviewStatusOnly
+    {
+        get => _isPreviewStatusOnly;
+        private set
+        {
+            if (_isPreviewStatusOnly == value)
+            {
+                return;
+            }
+
+            _isPreviewStatusOnly = value;
+            OnPropertyChanged(nameof(IsPreviewStatusOnly));
+            OnPropertyChanged(nameof(StatusOnlyPreviewVisibility));
+        }
+    }
+
+    public Visibility StatusOnlyPreviewVisibility => IsPreviewStatusOnly
+        ? Visibility.Visible
+        : Visibility.Collapsed;
+
+    public string PreviewStatusReason
+    {
+        get => _previewStatusReason;
+        private set
+        {
+            if (_previewStatusReason == value)
+            {
+                return;
+            }
+
+            _previewStatusReason = value;
+            OnPropertyChanged(nameof(PreviewStatusReason));
+        }
+    }
+
+    internal void SetSourceWindowPolicy(SourceWindowPolicy policy)
+    {
+        SourceWindowPolicy = policy;
+    }
+
+    internal void DowngradeToStatusOnlyPreview(string reason)
+    {
+        PreviewStatusReason = string.IsNullOrWhiteSpace(reason)
+            ? "Live preview unavailable"
+            : reason;
+        IsPreviewStatusOnly = true;
+    }
+
+    internal void ClearStatusOnlyPreview()
+    {
+        PreviewStatusReason = string.Empty;
+        IsPreviewStatusOnly = false;
+        LivePreviewFailureCount = 0;
+        LivePreviewRecoveryAttempts = 0;
+    }
 
     internal void SetBadge(ShelfBadgeKind kind, string detail = "")
     {

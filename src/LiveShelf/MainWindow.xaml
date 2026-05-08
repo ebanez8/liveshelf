@@ -306,6 +306,68 @@
                                                 KeyUp="PreviewSurface_KeyUp"
                                                 TextInput="PreviewSurface_TextInput"/>
 
+                                        <Border Background="#F0090B0E"
+                                                CornerRadius="4"
+                                                Padding="12"
+                                                Visibility="{Binding StatusOnlyPreviewVisibility}">
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="*"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                </Grid.RowDefinitions>
+
+                                                <TextBlock Grid.Row="0"
+                                                           Text="{Binding CardTitle}"
+                                                           FontSize="13"
+                                                           FontWeight="SemiBold"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Grid.Row="1"
+                                                           Text="{Binding Title}"
+                                                           Foreground="{StaticResource TextMuted}"
+                                                           FontSize="10"
+                                                           Margin="0,3,0,0"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Grid.Row="2"
+                                                           Text="{Binding StatusText}"
+                                                           Foreground="#EEF2F7"
+                                                           FontSize="11"
+                                                           Margin="0,9,0,0"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Grid.Row="3"
+                                                           Text="{Binding DetailText}"
+                                                           Foreground="{StaticResource TextMuted}"
+                                                           FontSize="10"
+                                                           Margin="0,3,0,0"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                                <ProgressBar Grid.Row="4"
+                                                             VerticalAlignment="Bottom"
+                                                             Minimum="0"
+                                                             Maximum="100"
+                                                             Value="{Binding MediaProgressPercent, Mode=OneWay}"
+                                                             Style="{StaticResource MediaProgressStyle}"
+                                                             Visibility="{Binding MediaProgressVisibility}"/>
+                                                <DockPanel Grid.Row="5"
+                                                           LastChildFill="True"
+                                                           Margin="0,10,0,0">
+                                                    <Button DockPanel.Dock="Right"
+                                                            Tag="{Binding}"
+                                                            Content="Restore"
+                                                            Style="{StaticResource HeaderActionButtonStyle}"
+                                                            Click="FallbackRestoreButton_Click"/>
+                                                    <TextBlock Text="{Binding PreviewStatusReason}"
+                                                               Foreground="{StaticResource TextMuted}"
+                                                               FontSize="10"
+                                                               VerticalAlignment="Center"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               Margin="0,0,10,0"/>
+                                                </DockPanel>
+                                            </Grid>
+                                        </Border>
+
                                         <Border Background="#99090B0E"
                                                 CornerRadius="4"
                                                 Visibility="{Binding ClosedOverlayVisibility}">

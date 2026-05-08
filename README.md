@@ -41,10 +41,17 @@ Use the `Agents` menu in the shelf header to enable Codex tracking, Claude track
 - Codex: `%USERPROFILE%\.codex\config.toml` and `%USERPROFILE%\.codex\hooks.json`
 - Claude Code: `%USERPROFILE%\.claude\settings.json`
 
-Codex and Claude hooks run:
+Codex tracking enables the current Codex feature flag in `config.toml`:
+
+```toml
+[features]
+hooks = true
+```
+
+Codex hooks run through a small command shim that always exits successfully after forwarding the hook payload. This keeps Live Shelf hook failures from interrupting Codex tool use while the bridge queues events when Live Shelf is closed. Claude hooks run the bridge directly:
 
 ```text
-"%LOCALAPPDATA%\LiveShelf\liveshelf-bridge.exe" --source codex
+cmd.exe /d /c call "%LOCALAPPDATA%\LiveShelf\liveshelf-codex-hook.cmd"
 "%LOCALAPPDATA%\LiveShelf\liveshelf-bridge.exe" --source claude
 ```
 

@@ -62,6 +62,7 @@ internal static class NativeMethods
     internal const uint CWP_SKIPDISABLED = 0x0002;
 
     internal const int DWM_TNP_RECTDESTINATION = 0x00000001;
+    internal const int DWM_TNP_RECTSOURCE = 0x00000002;
     internal const int DWM_TNP_OPACITY = 0x00000004;
     internal const int DWM_TNP_VISIBLE = 0x00000008;
     internal const int DWM_TNP_SOURCECLIENTAREAONLY = 0x00000010;

@@ -538,6 +538,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private void FallbackRestoreButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (GetItemFromSender(sender) is { } item)
+        {
+            ForgetPeek(item);
+            _shelver?.Restore(item);
+            e.Handled = true;
+        }
+    }
+
     private void Card_Loaded(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement card || card.Tag is not ShelvedWindow item)

@@ -12,6 +12,16 @@
     <Compile Include="Program.cs" />
     <Compile Include="..\..\src\LiveShelf\MediaTimelineEstimator.cs"
              Link="MediaTimelineEstimator.cs" />
+    <Compile Include="..\..\src\LiveShelf\NativeMethods.cs"
+             Link="NativeMethods.cs" />
+    <Compile Include="..\..\src\LiveShelf\Win32InteropException.cs"
+             Link="Win32InteropException.cs" />
+    <Compile Include="..\..\src\LiveShelf\SourceWindowPolicy.cs"
+             Link="SourceWindowPolicy.cs" />
+    <Compile Include="..\..\src\LiveShelf\DwmThumbnailLayout.cs"
+             Link="DwmThumbnailLayout.cs" />
+    <Compile Include="..\..\src\LiveShelf\AgentHookInstaller.cs"
+             Link="AgentHookInstaller.cs" />
   </ItemGroup>
 
 </Project>
