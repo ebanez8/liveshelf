@@ -31,6 +31,11 @@ internal static class SourceWindowPolicyRules
         return RequiresSourceSizePreservation(policy);
     }
 
+    internal static bool SupportsAutomaticInteractiveMode(SourceWindowPolicy policy)
+    {
+        return !RequiresSourceSizePreservation(policy);
+    }
+
     internal static int GetLivePreviewParkFlags()
     {
         return NativeMethods.SWP_NOACTIVATE |

@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Text.RegularExpressions;
 using System.Windows;
@@ -320,6 +321,9 @@ internal sealed class WindowShelver
 
         item.IsInteractive = true;
         item.IsPreparingInteractive = false;
+        item.LastInputTargetHwnd = IntPtr.Zero;
+        Trace.WriteLine(
+            $"LiveShelf InteractiveMode enter card={item.Id} hwnd=0x{item.SourceHwnd.ToInt64():X} policy={item.SourceWindowPolicy}");
         if (screenBounds.Width > 0 && screenBounds.Height > 0)
         {
             PositionInteractiveSource(item, screenBounds);
@@ -375,6 +379,9 @@ internal sealed class WindowShelver
 
         item.IsInteractive = false;
         item.IsPreparingInteractive = false;
+        item.LastInputTargetHwnd = IntPtr.Zero;
+        Trace.WriteLine(
+            $"LiveShelf InteractiveMode exit card={item.Id} hwnd=0x{item.SourceHwnd.ToInt64():X} policy={item.SourceWindowPolicy}");
         ParkInteractiveSource(item);
         RefreshThumbnailRegistration(
             item,
@@ -530,6 +537,8 @@ internal sealed class WindowShelver
         ShelvedWindow item,
         bool allowMoveToOriginal = false)
     {
+        Trace.WriteLine(
+            $"LiveShelf source demote once card={item.Id} hwnd=0x{item.SourceHwnd.ToInt64():X} policy={item.SourceWindowPolicy} moveToOriginal={allowMoveToOriginal}");
         NativeMethods.SetWindowPos(
             item.SourceHwnd,
             NativeMethods.HWND_NOTOPMOST,
@@ -594,6 +603,8 @@ internal sealed class WindowShelver
         }
 
         NativeMethods.ShowWindow(item.SourceHwnd, NativeMethods.SW_RESTORE);
+        Trace.WriteLine(
+            $"LiveShelf SetForegroundWindow normal interactive hwnd=0x{item.SourceHwnd.ToInt64():X} card={item.Id}");
         NativeMethods.SetWindowPos(
             item.SourceHwnd,
             NativeMethods.HWND_TOPMOST,
@@ -669,6 +680,8 @@ internal sealed class WindowShelver
 
     private static void PositionLivePreviewInteractiveSource(ShelvedWindow item)
     {
+        Trace.WriteLine(
+            $"LiveShelf source demote for explicit InteractiveMode card={item.Id} hwnd=0x{item.SourceHwnd.ToInt64():X} policy={item.SourceWindowPolicy}");
         NativeMethods.SetWindowPos(
             item.SourceHwnd,
             NativeMethods.HWND_BOTTOM,
@@ -712,6 +725,8 @@ internal sealed class WindowShelver
 
         if (activate)
         {
+            Trace.WriteLine(
+                $"LiveShelf SetForegroundWindow restore hwnd=0x{item.SourceHwnd.ToInt64():X} card={item.Id}");
             NativeMethods.SetForegroundWindow(item.SourceHwnd);
         }
     }
@@ -732,6 +747,10 @@ internal sealed class WindowShelver
         var foregroundWindow = NativeMethods.GetForegroundWindow();
         var virtualScreen = NativeMethods.GetVirtualScreenRect();
         var now = DateTime.UtcNow;
+        if (foregroundWindow != _lastForegroundWindow)
+        {
+            Trace.WriteLine($"LiveShelf foreground hwnd=0x{foregroundWindow.ToInt64():X}");
+        }
 
         foreach (var item in _items.ToArray())
         {
@@ -804,7 +823,8 @@ internal sealed class WindowShelver
             await Task.Delay(delay);
             await _dispatcher.InvokeAsync(() =>
             {
-                if (!_items.Contains(item) || !item.IsSourceAlive || !NativeMethods.IsWindow(item.SourceHwnd))
+                if (!_items.Contains(item) || !item.IsSourceAlive || !NativeMethods.IsWindow(item.SourceHwnd) ||
+                    item.IsInteractive || item.IsPreparingInteractive)
                 {
                     return;
                 }
@@ -2369,6 +2389,14 @@ internal sealed class WindowShelver
 
     private static IntPtr GetInputTarget(ShelvedWindow item, int sourceX, int sourceY, out int targetX, out int targetY)
     {
+        targetX = sourceX;
+        targetY = sourceY;
+
+        if (!NativeMethods.IsWindow(item.SourceHwnd))
+        {
+            return item.SourceHwnd;
+        }
+
         var current = item.SourceHwnd;
         var point = new NativeMethods.POINT
         {
@@ -2383,7 +2411,7 @@ internal sealed class WindowShelver
                 point,
                 NativeMethods.CWP_SKIPINVISIBLE | NativeMethods.CWP_SKIPDISABLED);
 
-            if (child == IntPtr.Zero || child == current)
+            if (child == IntPtr.Zero || child == current || !NativeMethods.IsWindow(child))
             {
                 break;
             }
@@ -2408,7 +2436,9 @@ internal sealed class WindowShelver
     {
         if (!SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy))
         {
-            NativeMethods.SetForegroundWindow(item.SourceHwnd);
+            Trace.WriteLine(
+                $"LiveShelf ForceSetForegroundWindow input hwnd=0x{item.SourceHwnd.ToInt64():X} card={item.Id}");
+            NativeMethods.ForceSetForegroundWindow(item.SourceHwnd);
         }
 
         NativeMethods.SetFocus(target == IntPtr.Zero ? item.SourceHwnd : target);

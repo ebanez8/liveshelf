@@ -1,10 +1,12 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Media;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -39,10 +41,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const int InteractiveActivationDelayMs = 500;
     private const int AttentionAnimationMs = 720;
 
-    private static readonly Color CardBackgroundColor = Color.FromRgb(24, 29, 35);
-    private static readonly Color CardBorderColor = Color.FromRgb(38, 46, 55);
+    private static readonly Color CardBackgroundColor = Color.FromArgb(110, 43, 48, 56);
+    private static readonly Color CardBorderColor = Color.FromArgb(50, 255, 255, 255);
     private static readonly Color AttentionBorderColor = Color.FromRgb(117, 196, 255);
-    private static readonly Color AttentionBackgroundColor = Color.FromRgb(38, 49, 61);
+    private static readonly Color AttentionBackgroundColor = Color.FromArgb(210, 38, 49, 61);
     private static readonly Brush AgentIdleBrush = new SolidColorBrush(Color.FromRgb(145, 156, 172));
     private static readonly Brush AgentPendingBrush = new SolidColorBrush(Color.FromRgb(255, 196, 87));
     private static readonly Brush AgentConnectedBrush = new SolidColorBrush(Color.FromRgb(95, 220, 139));
@@ -67,6 +69,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private DateTime _interactiveExitSuppressedUntilUtc;
     private int _shelfAnimationGeneration;
     private int _interactiveActivationGeneration;
+    private DateTime _lastHitTestLogUtc = DateTime.MinValue;
+    private string _lastHitTestLogKey = string.Empty;
     private string _statusMessage = "Ready";
     private string _agentConnectionText = "Connect";
     private string _agentConnectionToolTip = "Connect Codex or Claude Code hooks";
@@ -118,9 +122,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         _windowHandle = new WindowInteropHelper(this).Handle;
         NativeMethods.MarkAsToolWindow(_windowHandle);
+        Trace.WriteLine(
+            $"LiveShelf overlay exstyle=0x{NativeMethods.GetWindowLong(_windowHandle, NativeMethods.GWL_EXSTYLE):X8}");
 
         _source = HwndSource.FromHwnd(_windowHandle);
         _source?.AddHook(WndProc);
+
+        try
+        {
+            if (_source?.CompositionTarget is { } compositionTarget)
+            {
+                compositionTarget.BackgroundColor = Color.FromArgb(0, 0, 0, 0);
+            }
+
+            NativeMethods.EnableMicaBackdrop(_windowHandle);
+        }
+        catch
+        {
+            // Mica/acrylic not available, shelf stays opaque
+        }
 
         _shelver = new WindowShelver(_windowHandle, _items);
         _shelver.StatusChanged += (_, message) => StatusMessage = message;
@@ -147,6 +167,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         NativeMethods.UnregisterHotKey(_windowHandle, EmergencyRestoreHotkeyId);
         _source?.RemoveHook(WndProc);
         RestoreShelvedWindowsForShutdown();
+    }
+
+    protected override void OnDeactivated(EventArgs e)
+    {
+        base.OnDeactivated(e);
+
+        if (_zoomedItem is { IsInteractive: true } item)
+        {
+            var foreground = NativeMethods.GetForegroundWindow();
+            if (foreground == item.SourceHwnd)
+            {
+                Trace.WriteLine(
+                    $"LiveShelf InteractiveMode retained card={item.Id} foregroundSource=0x{foreground.ToInt64():X}");
+                return;
+            }
+
+            Trace.WriteLine(
+                $"LiveShelf InteractiveMode exit card={item.Id} foregroundChanged=0x{foreground.ToInt64():X}");
+            DeactivateZoom(item);
+        }
+
+        ReleaseAllPreviewMouseCapture("window deactivated");
     }
 
     internal void RestoreShelvedWindowsForShutdown()
@@ -207,6 +249,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (msg == NativeMethods.WM_NCHITTEST)
+        {
+            var screenX = GetSignedLoWord(lParam);
+            var screenY = GetSignedHiWord(lParam);
+            var inside = IsPointInsideShelfHitRegion(screenX, screenY, out var hitArea);
+            LogHitTest(screenX, screenY, inside, hitArea);
+            handled = true;
+            return new IntPtr(inside ? NativeMethods.HTCLIENT : NativeMethods.HTTRANSPARENT);
+        }
+
         if (msg != NativeMethods.WM_HOTKEY)
         {
             return IntPtr.Zero;
@@ -235,6 +287,163 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         return IntPtr.Zero;
+    }
+
+    private bool IsPointInsideShelfHitRegion(int screenX, int screenY, out string hitArea)
+    {
+        hitArea = "outside";
+        if (!ShouldShowShelf || RootSurface is null)
+        {
+            hitArea = "hidden";
+            return false;
+        }
+
+        var local = PointFromScreen(new Point(screenX, screenY));
+        if (local.X < 0 ||
+            local.Y < 0 ||
+            local.X >= ActualWidth ||
+            local.Y >= ActualHeight)
+        {
+            return false;
+        }
+
+        DependencyObject? hitObject;
+        try
+        {
+            hitObject = InputHitTest(local) as DependencyObject;
+        }
+        catch (InvalidOperationException)
+        {
+            hitObject = null;
+        }
+
+        if (hitObject is null)
+        {
+            hitArea = "empty";
+            return false;
+        }
+
+        if (FindAncestorWithName(hitObject, "HeaderSurface") is not null)
+        {
+            hitArea = "header";
+            return true;
+        }
+
+        if (FindAncestorWithName(hitObject, "StatusSurface") is not null)
+        {
+            hitArea = "status";
+            return true;
+        }
+
+        if (FindTaggedCardAncestor(hitObject) is not null)
+        {
+            hitArea = "card";
+            return true;
+        }
+
+        if (FindAncestor<Button>(hitObject) is not null ||
+            FindAncestor<MenuItem>(hitObject) is not null ||
+            FindAncestor<ScrollBar>(hitObject) is not null)
+        {
+            hitArea = "control";
+            return true;
+        }
+
+        hitArea = hitObject.GetType().Name;
+        return false;
+    }
+
+    private void LogHitTest(int screenX, int screenY, bool inside, string hitArea)
+    {
+        var key = $"{inside}:{hitArea}";
+        var now = DateTime.UtcNow;
+        if (key == _lastHitTestLogKey && now - _lastHitTestLogUtc < TimeSpan.FromMilliseconds(600))
+        {
+            return;
+        }
+
+        _lastHitTestLogKey = key;
+        _lastHitTestLogUtc = now;
+        Trace.WriteLine(
+            $"LiveShelf WM_NCHITTEST point=({screenX},{screenY}) result={(inside ? "HTCLIENT" : "HTTRANSPARENT")} area={hitArea}");
+    }
+
+    private static int GetSignedLoWord(IntPtr value)
+    {
+        return unchecked((short)((long)value & 0xFFFF));
+    }
+
+    private static int GetSignedHiWord(IntPtr value)
+    {
+        return unchecked((short)(((long)value >> 16) & 0xFFFF));
+    }
+
+    private static FrameworkElement? FindTaggedCardAncestor(DependencyObject? current)
+    {
+        while (current is not null)
+        {
+            if (current is FrameworkElement { Tag: ShelvedWindow } element)
+            {
+                return element;
+            }
+
+            current = GetParent(current);
+        }
+
+        return null;
+    }
+
+    private static FrameworkElement? FindAncestorWithName(DependencyObject? current, string name)
+    {
+        while (current is not null)
+        {
+            if (current is FrameworkElement { Name: var currentName } element &&
+                string.Equals(currentName, name, StringComparison.Ordinal))
+            {
+                return element;
+            }
+
+            current = GetParent(current);
+        }
+
+        return null;
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? current)
+        where T : DependencyObject
+    {
+        while (current is not null)
+        {
+            if (current is T typed)
+            {
+                return typed;
+            }
+
+            current = GetParent(current);
+        }
+
+        return null;
+    }
+
+    private static DependencyObject? GetParent(DependencyObject current)
+    {
+        try
+        {
+            if (current is Visual)
+            {
+                return VisualTreeHelper.GetParent(current);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+        }
+
+        return current switch
+        {
+            FrameworkElement element => element.Parent,
+            FrameworkContentElement contentElement => contentElement.Parent,
+            _ => null
+        };
     }
 
     private void RegisterHotkeys()
@@ -593,6 +802,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (sender is FrameworkElement element && element.Tag is ShelvedWindow item)
         {
+            ReleasePreviewMouseCapture(item, "preview unloaded");
             _previewElements.Remove(item);
         }
     }
@@ -610,7 +820,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         preview.Focus();
-        preview.CaptureMouse();
+        Keyboard.Focus(preview);
+        CapturePreviewMouse(preview, item, "left down");
         ForwardMouseToSource(item, preview, NativeMethods.WM_LBUTTONDOWN, NativeMethods.MK_LBUTTON, e.GetPosition(preview));
         e.Handled = true;
     }
@@ -623,7 +834,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         ForwardMouseToSource(item, preview, NativeMethods.WM_LBUTTONUP, 0, e.GetPosition(preview));
-        preview.ReleaseMouseCapture();
+        ReleasePreviewMouseCapture(item, "left up");
         e.Handled = true;
     }
 
@@ -635,6 +846,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         preview.Focus();
+        Keyboard.Focus(preview);
+        CapturePreviewMouse(preview, item, "right down");
         ForwardMouseToSource(item, preview, NativeMethods.WM_RBUTTONDOWN, NativeMethods.MK_RBUTTON, e.GetPosition(preview));
         e.Handled = true;
     }
@@ -647,7 +860,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         ForwardMouseToSource(item, preview, NativeMethods.WM_RBUTTONUP, 0, e.GetPosition(preview));
+        ReleasePreviewMouseCapture(item, "right up");
         e.Handled = true;
+    }
+
+    private void PreviewSurface_MouseLeave(object sender, MouseEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: ShelvedWindow item } &&
+            e.LeftButton != MouseButtonState.Pressed &&
+            e.RightButton != MouseButtonState.Pressed)
+        {
+            ReleasePreviewMouseCapture(item, "preview leave");
+        }
     }
 
     private void PreviewSurface_MouseMove(object sender, MouseEventArgs e)
@@ -669,6 +893,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         ForwardMouseToSource(item, preview, NativeMethods.WM_MOUSEMOVE, keyState, e.GetPosition(preview));
+        e.Handled = true;
     }
 
     private void PreviewSurface_MouseWheel(object sender, MouseWheelEventArgs e)
@@ -700,6 +925,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (sender is FrameworkElement { Tag: ShelvedWindow item } && item.IsInteractive)
         {
+            if (e.Key == Key.Escape)
+            {
+                DeactivateZoom(item);
+                e.Handled = true;
+                return;
+            }
+
             _shelver?.ForwardKeyInput(item, NativeMethods.WM_KEYDOWN, KeyInterop.VirtualKeyFromKey(e.Key == Key.System ? e.SystemKey : e.Key));
             e.Handled = true;
         }
@@ -754,6 +986,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        var foreground = NativeMethods.GetForegroundWindow();
+        if (foreground != IntPtr.Zero &&
+            foreground != _windowHandle &&
+            foreground != item.SourceHwnd)
+        {
+            Trace.WriteLine(
+                $"LiveShelf InteractiveMode exit card={item.Id} unrelatedForeground=0x{foreground.ToInt64():X}");
+            DeactivateZoom(item);
+            ClearPeek();
+            return;
+        }
+
         if (IsMouseOver || IsCursorInsidePreviewBounds(item))
         {
             return;
@@ -777,6 +1021,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (hidden)
         {
+            ReleaseAllPreviewMouseCapture("shelf hidden");
             ClearPeek();
         }
 
@@ -850,6 +1095,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_zoomedItem == item)
         {
             CancelPendingInteractiveActivation();
+            ReleasePreviewMouseCapture(item, "forget peek");
             _shelver?.EndInteractiveZoom(item);
             _zoomedItem = null;
             item.IsZoomed = false;
@@ -862,6 +1108,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_zoomedItem == item)
         {
             CancelPendingInteractiveActivation();
+            ReleasePreviewMouseCapture(item, "card collapse");
             _shelver?.EndInteractiveZoom(item);
             _zoomedItem = null;
             _interactiveExitTimer.Stop();
@@ -888,7 +1135,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (_zoomedItem == item)
         {
-            if (!item.IsInteractive)
+            if (!item.IsInteractive && SupportsAutomaticInteractiveMode(item))
             {
                 ScheduleInteractiveActivation(item);
             }
@@ -899,15 +1146,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _zoomedItem = item;
         item.IsZoomed = true;
         item.MarkAttentionSeen();
-        ScheduleInteractiveActivation(item);
-        FocusPreview(item);
+        if (SupportsAutomaticInteractiveMode(item))
+        {
+            ScheduleInteractiveActivation(item);
+            FocusPreview(item);
+        }
+        else
+        {
+            CancelPendingInteractiveActivation();
+            StatusMessage = $"Previewing {item.ProcessName}";
+        }
+
         AnimatePreviewHeight(item, GetZoomPreviewHeight(), ZoomAnimationMs);
         if (_cardElements.TryGetValue(item, out var card))
         {
             AnimateCardTransform(card, scale: 1, offsetX: 0, ZoomAnimationMs);
         }
 
-        StatusMessage = $"Zooming {item.ProcessName}";
+        if (SupportsAutomaticInteractiveMode(item))
+        {
+            StatusMessage = $"Zooming {item.ProcessName}";
+        }
+
         PositionShelfWindow();
         QueueThumbnailRefresh();
     }
@@ -920,6 +1180,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         CancelPendingInteractiveActivation();
+        ReleasePreviewMouseCapture(item, "zoom exit");
         _shelver?.EndInteractiveZoom(item);
         _zoomedItem = null;
         item.IsZoomed = false;
@@ -938,6 +1199,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void ScheduleInteractiveActivation(ShelvedWindow item)
     {
+        if (!SupportsAutomaticInteractiveMode(item))
+        {
+            // Browser/media previews stay passive by default. The previous demotion/refocus guard could
+            // steal global focus and make clicks on other Windows surfaces feel blocked.
+            Trace.WriteLine(
+                $"LiveShelf InteractiveMode skipped card={item.Id} policy={item.SourceWindowPolicy}");
+            return;
+        }
+
         var generation = ++_interactiveActivationGeneration;
         _pendingInteractiveItem = item;
         _interactiveExitSuppressedUntilUtc = DateTime.UtcNow.AddMilliseconds(InteractiveActivationDelayMs + 1200);
@@ -961,6 +1231,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             StatusMessage = $"Using {item.ProcessName}";
             QueueThumbnailRefresh();
         });
+    }
+
+    private static bool SupportsAutomaticInteractiveMode(ShelvedWindow item)
+    {
+        return SourceWindowPolicyRules.SupportsAutomaticInteractiveMode(item.SourceWindowPolicy);
     }
 
     private void CancelPendingInteractiveActivation()
@@ -1248,6 +1523,44 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             screenPoint.X,
             screenPoint.Y);
         e.Handled = true;
+    }
+
+    private static void CapturePreviewMouse(FrameworkElement preview, ShelvedWindow item, string reason)
+    {
+        preview.CaptureMouse();
+        Trace.WriteLine(
+            $"LiveShelf capture acquired reason={reason} card={item.Id} owner={Mouse.Captured?.GetType().Name ?? "none"}");
+    }
+
+    private void ReleasePreviewMouseCapture(ShelvedWindow item, string reason)
+    {
+        _previewElements.TryGetValue(item, out var preview);
+        var owner = Mouse.Captured;
+        if (preview is not null && preview.IsMouseCaptured)
+        {
+            preview.ReleaseMouseCapture();
+        }
+        else if (owner is FrameworkElement element && ReferenceEquals(element.Tag, item))
+        {
+            element.ReleaseMouseCapture();
+        }
+        else if (owner is not null)
+        {
+            Trace.WriteLine(
+                $"LiveShelf capture owner retained reason={reason} card={item.Id} owner={owner.GetType().Name}");
+            return;
+        }
+
+        Trace.WriteLine(
+            $"LiveShelf capture released reason={reason} card={item.Id} owner={Mouse.Captured?.GetType().Name ?? "none"}");
+    }
+
+    private void ReleaseAllPreviewMouseCapture(string reason)
+    {
+        foreach (var item in _previewElements.Keys.ToArray())
+        {
+            ReleasePreviewMouseCapture(item, reason);
+        }
     }
 
     private void FocusPreview(ShelvedWindow item)

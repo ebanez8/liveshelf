@@ -8,6 +8,7 @@ namespace LiveShelf;
 internal static class NativeMethods
 {
     internal const int WM_HOTKEY = 0x0312;
+    internal const int WM_NCHITTEST = 0x0084;
     internal const int WM_CLOSE = 0x0010;
     internal const int WM_KEYDOWN = 0x0100;
     internal const int WM_KEYUP = 0x0101;
@@ -30,6 +31,9 @@ internal static class NativeMethods
     internal const int MK_SHIFT = 0x0004;
     internal const int MK_CONTROL = 0x0008;
 
+    internal const int HTCLIENT = 1;
+    internal const int HTTRANSPARENT = -1;
+
     internal const int SW_SHOWNORMAL = 1;
     internal const int SW_SHOWMINIMIZED = 2;
     internal const int SW_SHOWMAXIMIZED = 3;
@@ -43,6 +47,7 @@ internal static class NativeMethods
     internal const int GWL_EXSTYLE = -20;
     internal const int WS_EX_APPWINDOW = 0x00040000;
     internal const int WS_EX_TOOLWINDOW = 0x00000080;
+    internal const int WS_EX_NOACTIVATE = 0x08000000;
 
     internal const int GW_OWNER = 4;
     internal const int GA_ROOT = 2;
@@ -193,6 +198,19 @@ internal static class NativeMethods
 
     [DllImport("dwmapi.dll", SetLastError = true)]
     internal static extern int DwmQueryThumbnailSourceSize(IntPtr hThumbnail, out SIZE pSize);
+
+    [DllImport("dwmapi.dll")]
+    internal static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
+
+    [DllImport("dwmapi.dll")]
+    internal static extern int DwmExtendFrameIntoClientArea(IntPtr hwnd, ref MARGINS pMarInset);
+
+    [DllImport("kernel32.dll")]
+    internal static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
 
     internal static string GetWindowTitle(IntPtr hwnd)
     {
@@ -422,5 +440,56 @@ internal static class NativeMethods
         public bool fVisible;
         [MarshalAs(UnmanagedType.Bool)]
         public bool fSourceClientAreaOnly;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MARGINS
+    {
+        public int Left;
+        public int Right;
+        public int Top;
+        public int Bottom;
+
+        public MARGINS(int all)
+        {
+            Left = Right = Top = Bottom = all;
+        }
+    }
+
+    internal static void EnableMicaBackdrop(IntPtr hwnd)
+    {
+        var darkMode = 1;
+        DwmSetWindowAttribute(hwnd, 20, ref darkMode, sizeof(int));
+
+        var backdropType = 4;
+        DwmSetWindowAttribute(hwnd, 38, ref backdropType, sizeof(int));
+
+        var margins = new MARGINS(-1);
+        DwmExtendFrameIntoClientArea(hwnd, ref margins);
+    }
+
+    internal static void ForceSetForegroundWindow(IntPtr hwnd)
+    {
+        if (GetForegroundWindow() == hwnd)
+        {
+            return;
+        }
+
+        var currentThread = GetCurrentThreadId();
+        var foregroundHwnd = GetForegroundWindow();
+        var foregroundThread = foregroundHwnd != IntPtr.Zero
+            ? GetWindowThreadProcessId(foregroundHwnd, out _)
+            : 0u;
+
+        var attached = foregroundThread != 0 &&
+                       foregroundThread != currentThread &&
+                       AttachThreadInput(currentThread, foregroundThread, true);
+
+        SetForegroundWindow(hwnd);
+
+        if (attached)
+        {
+            AttachThreadInput(currentThread, foregroundThread, false);
+        }
     }
 }

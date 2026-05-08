@@ -99,6 +99,15 @@ AssertEqual(
     "known media player should use media source policy before session matching",
     SourceWindowPolicy.Media,
     SourceWindowPolicyRules.Classify("vlc", isMediaCard: false));
+AssertTrue(
+    "normal source windows may still use automatic interactive mode",
+    SourceWindowPolicyRules.SupportsAutomaticInteractiveMode(SourceWindowPolicy.Normal));
+AssertTrue(
+    "browser cards must default to preview mode",
+    !SourceWindowPolicyRules.SupportsAutomaticInteractiveMode(SourceWindowPolicy.Browser));
+AssertTrue(
+    "media cards must default to preview mode",
+    !SourceWindowPolicyRules.SupportsAutomaticInteractiveMode(SourceWindowPolicy.Media));
 
 var liveParkFlags = SourceWindowPolicyRules.GetLivePreviewParkFlags();
 AssertTrue(

@@ -12,15 +12,15 @@
         Topmost="True"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True"
-        Background="#101317"
+        Background="Transparent"
         Foreground="#EEF2F7"
         Loaded="Window_Loaded"
         Closing="Window_Closing"
         SizeChanged="Window_SizeChanged"
         MouseLeave="Window_MouseLeave">
     <Window.Resources>
-        <SolidColorBrush x:Key="CardBackground" Color="#181D23"/>
-        <SolidColorBrush x:Key="CardBorder" Color="#262E37"/>
+        <SolidColorBrush x:Key="CardBackground" Color="#6E2B3038"/>
+        <SolidColorBrush x:Key="CardBorder" Color="#32FFFFFF"/>
         <SolidColorBrush x:Key="TextMuted" Color="#98A3B1"/>
 
         <Style x:Key="MediaProgressStyle" TargetType="{x:Type ProgressBar}">
@@ -85,8 +85,8 @@
         <Style x:Key="HeaderActionButtonStyle" TargetType="{x:Type Button}">
             <Setter Property="Height" Value="23"/>
             <Setter Property="Padding" Value="8,0"/>
-            <Setter Property="Background" Value="#191F26"/>
-            <Setter Property="BorderBrush" Value="#29323C"/>
+            <Setter Property="Background" Value="#34FFFFFF"/>
+            <Setter Property="BorderBrush" Value="#2BFFFFFF"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Foreground" Value="#EEF2F7"/>
             <Setter Property="FontSize" Value="10"/>
@@ -106,11 +106,11 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ButtonSurface" Property="Background" Value="#222A33"/>
-                                <Setter TargetName="ButtonSurface" Property="BorderBrush" Value="#394553"/>
+                                <Setter TargetName="ButtonSurface" Property="Background" Value="#52FFFFFF"/>
+                                <Setter TargetName="ButtonSurface" Property="BorderBrush" Value="#45FFFFFF"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="ButtonSurface" Property="Background" Value="#141A20"/>
+                                <Setter TargetName="ButtonSurface" Property="Background" Value="#2EFFFFFF"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -132,8 +132,8 @@
                                 Padding="4,6">
                             <Border.Background>
                                 <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                                    <GradientStop Color="#EC1A2030" Offset="0"/>
-                                    <GradientStop Color="#F0131820" Offset="1"/>
+                                    <GradientStop Color="#D3232730" Offset="0"/>
+                                    <GradientStop Color="#C8181C23" Offset="1"/>
                                 </LinearGradientBrush>
                             </Border.Background>
                             <Border.BorderBrush>
@@ -185,9 +185,28 @@
     </Window.Resources>
 
     <Border x:Name="RootSurface"
-            BorderBrush="#303844"
             BorderThickness="1,0,0,0"
-            Background="#101317">
+            CornerRadius="12,0,0,12">
+        <Border.Background>
+            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                <GradientStop Color="#60323840" Offset="0"/>
+                <GradientStop Color="#4A252B33" Offset="0.48"/>
+                <GradientStop Color="#5630383F" Offset="1"/>
+            </LinearGradientBrush>
+        </Border.Background>
+        <Border.BorderBrush>
+            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                <GradientStop Color="#66FFFFFF" Offset="0"/>
+                <GradientStop Color="#24FFFFFF" Offset="0.5"/>
+                <GradientStop Color="#08FFFFFF" Offset="1"/>
+            </LinearGradientBrush>
+        </Border.BorderBrush>
+        <Border.Effect>
+            <DropShadowEffect ShadowDepth="0"
+                              BlurRadius="26"
+                              Opacity="0.26"
+                              Color="#000000"/>
+        </Border.Effect>
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
@@ -195,7 +214,7 @@
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <DockPanel Grid.Row="0" Margin="10,10,10,7" LastChildFill="False">
+            <DockPanel x:Name="HeaderSurface" Grid.Row="0" Margin="10,10,10,7" LastChildFill="False">
                 <TextBlock Text="Live Shelf"
                            FontSize="12"
                            FontWeight="SemiBold"
@@ -204,7 +223,7 @@
                         MinWidth="24"
                         Height="20"
                         CornerRadius="10"
-                        Background="#1B2128"
+                        Background="#34FFFFFF"
                         Padding="6,1">
                     <TextBlock Text="{Binding ItemCount}"
                                FontSize="10"
@@ -407,8 +426,8 @@
                                                 Tag="{Binding}"
                                                 Height="108"
                                                 Focusable="True"
-                                                Background="#090B0E"
-                                                BorderBrush="#0D1117"
+                                                Background="#4A090B0E"
+                                                BorderBrush="#28FFFFFF"
                                                 BorderThickness="1"
                                                 CornerRadius="4"
                                                 ClipToBounds="True"
@@ -420,12 +439,13 @@
                                                 MouseRightButtonDown="PreviewSurface_MouseRightButtonDown"
                                                 MouseRightButtonUp="PreviewSurface_MouseRightButtonUp"
                                                 MouseMove="PreviewSurface_MouseMove"
+                                                MouseLeave="PreviewSurface_MouseLeave"
                                                 MouseWheel="PreviewSurface_MouseWheel"
                                                 KeyDown="PreviewSurface_KeyDown"
                                                 KeyUp="PreviewSurface_KeyUp"
                                                 TextInput="PreviewSurface_TextInput"/>
 
-                                        <Border Background="#F0090B0E"
+                                        <Border Background="#C40B0D11"
                                                 CornerRadius="4"
                                                 Padding="12"
                                                 Visibility="{Binding StatusOnlyPreviewVisibility}">
@@ -487,7 +507,7 @@
                                             </Grid>
                                         </Border>
 
-                                        <Border Background="#99090B0E"
+                                        <Border Background="#8C0B0D11"
                                                 CornerRadius="4"
                                                 Visibility="{Binding ClosedOverlayVisibility}">
                                             <TextBlock Text="Window closed"
@@ -504,7 +524,8 @@
                 </ItemsControl>
             </ScrollViewer>
 
-            <TextBlock Grid.Row="2"
+            <TextBlock x:Name="StatusSurface"
+                       Grid.Row="2"
                        Text="{Binding StatusMessage}"
                        Margin="10,0,10,10"
                        Foreground="{StaticResource TextMuted}"
