@@ -47,10 +47,39 @@
             </Setter>
         </Style>
 
-        <Style x:Key="MenuItemStyle" TargetType="{x:Type MenuItem}">
-            <Setter Property="Padding" Value="11,6"/>
-            <Setter Property="Foreground" Value="#EEF2F7"/>
-            <Setter Property="Background" Value="#181D23"/>
+        <!-- Glass Menu Item -->
+        <Style x:Key="GlassMenuItemStyle" TargetType="{x:Type MenuItem}">
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Foreground" Value="#C8D8EA"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type MenuItem}">
+                        <Border x:Name="ItemBorder"
+                                Background="Transparent"
+                                CornerRadius="8"
+                                Margin="2,1"
+                                Padding="11,8">
+                            <DockPanel x:Name="ItemContent"
+                                       TextElement.Foreground="#C8D8EA">
+                                <ContentPresenter DockPanel.Dock="Left"
+                                                  ContentSource="Icon"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,10,0"/>
+                                <ContentPresenter ContentSource="Header"
+                                                  VerticalAlignment="Center"/>
+                            </DockPanel>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="ItemBorder" Property="Background" Value="#18FFFFFF"/>
+                                <Setter TargetName="ItemContent" Property="TextElement.Foreground" Value="#F0F6FC"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style x:Key="HeaderActionButtonStyle" TargetType="{x:Type Button}">
@@ -89,11 +118,69 @@
             </Setter>
         </Style>
 
-        <Style x:Key="AgentContextMenuStyle" TargetType="{x:Type ContextMenu}">
-            <Setter Property="Background" Value="#181D23"/>
-            <Setter Property="BorderBrush" Value="#2D3642"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Foreground" Value="#EEF2F7"/>
+        <!-- Glass Context Menu -->
+        <Style x:Key="GlassContextMenuStyle" TargetType="{x:Type ContextMenu}">
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="HasDropShadow" Value="True"/>
+            <Setter Property="Foreground" Value="#D0DEE8"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ContextMenu}">
+                        <Border Margin="10"
+                                CornerRadius="12"
+                                Padding="4,6">
+                            <Border.Background>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                    <GradientStop Color="#EC1A2030" Offset="0"/>
+                                    <GradientStop Color="#F0131820" Offset="1"/>
+                                </LinearGradientBrush>
+                            </Border.Background>
+                            <Border.BorderBrush>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                    <GradientStop Color="#38FFFFFF" Offset="0"/>
+                                    <GradientStop Color="#10FFFFFF" Offset="1"/>
+                                </LinearGradientBrush>
+                            </Border.BorderBrush>
+                            <Border.BorderThickness>
+                                <Thickness>1</Thickness>
+                            </Border.BorderThickness>
+                            <Border.Effect>
+                                <DropShadowEffect ShadowDepth="6"
+                                                  BlurRadius="28"
+                                                  Opacity="0.55"
+                                                  Color="#000000"
+                                                  Direction="270"/>
+                            </Border.Effect>
+                            <StackPanel IsItemsHost="True"
+                                        KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Glass Separator -->
+        <Style x:Key="GlassSeparatorStyle" TargetType="{x:Type Separator}">
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Separator}">
+                        <Border Height="1"
+                                Margin="14,5"
+                                CornerRadius="0.5">
+                            <Border.Background>
+                                <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5">
+                                    <GradientStop Color="#00FFFFFF" Offset="0"/>
+                                    <GradientStop Color="#18FFFFFF" Offset="0.15"/>
+                                    <GradientStop Color="#18FFFFFF" Offset="0.85"/>
+                                    <GradientStop Color="#00FFFFFF" Offset="1"/>
+                                </LinearGradientBrush>
+                            </Border.Background>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
     </Window.Resources>
 
@@ -139,23 +226,43 @@
                                    VerticalAlignment="Center"/>
                     </StackPanel>
                     <Button.ContextMenu>
-                        <ContextMenu Style="{StaticResource AgentContextMenuStyle}">
+                        <ContextMenu Style="{StaticResource GlassContextMenuStyle}">
                             <MenuItem Header="Connect Codex"
-                                      Style="{StaticResource MenuItemStyle}"
-                                      Click="EnableCodexTrackingMenuItem_Click"/>
+                                      Style="{StaticResource GlassMenuItemStyle}"
+                                      Click="EnableCodexTrackingMenuItem_Click">
+                                <MenuItem.Icon>
+                                    <Ellipse Width="7" Height="7" Fill="#50E3C2"/>
+                                </MenuItem.Icon>
+                            </MenuItem>
                             <MenuItem Header="Test Codex Hook"
-                                      Style="{StaticResource MenuItemStyle}"
-                                      Click="TestCodexTrackingMenuItem_Click"/>
+                                      Style="{StaticResource GlassMenuItemStyle}"
+                                      Click="TestCodexTrackingMenuItem_Click">
+                                <MenuItem.Icon>
+                                    <Ellipse Width="7" Height="7" Stroke="#50E3C2" StrokeThickness="1.2"/>
+                                </MenuItem.Icon>
+                            </MenuItem>
                             <MenuItem Header="Connect Claude Code"
-                                      Style="{StaticResource MenuItemStyle}"
-                                      Click="EnableClaudeTrackingMenuItem_Click"/>
+                                      Style="{StaticResource GlassMenuItemStyle}"
+                                      Click="EnableClaudeTrackingMenuItem_Click">
+                                <MenuItem.Icon>
+                                    <Ellipse Width="7" Height="7" Fill="#F5A623"/>
+                                </MenuItem.Icon>
+                            </MenuItem>
                             <MenuItem Header="Test Claude Hook"
-                                      Style="{StaticResource MenuItemStyle}"
-                                      Click="TestClaudeTrackingMenuItem_Click"/>
-                            <Separator/>
+                                      Style="{StaticResource GlassMenuItemStyle}"
+                                      Click="TestClaudeTrackingMenuItem_Click">
+                                <MenuItem.Icon>
+                                    <Ellipse Width="7" Height="7" Stroke="#F5A623" StrokeThickness="1.2"/>
+                                </MenuItem.Icon>
+                            </MenuItem>
+                            <Separator Style="{StaticResource GlassSeparatorStyle}"/>
                             <MenuItem Header="Connect Codex and Claude"
-                                      Style="{StaticResource MenuItemStyle}"
-                                      Click="EnableAllAgentTrackingMenuItem_Click"/>
+                                      Style="{StaticResource GlassMenuItemStyle}"
+                                      Click="EnableAllAgentTrackingMenuItem_Click">
+                                <MenuItem.Icon>
+                                    <Ellipse Width="7" Height="7" Fill="#A78BFA"/>
+                                </MenuItem.Icon>
+                            </MenuItem>
                         </ContextMenu>
                     </Button.ContextMenu>
                 </Button>
@@ -189,17 +296,29 @@
                                     ManipulationStarting="Card_ManipulationStarting"
                                     ManipulationDelta="Card_ManipulationDelta">
                                 <Border.ContextMenu>
-                                    <ContextMenu>
+                                    <ContextMenu Style="{StaticResource GlassContextMenuStyle}">
                                         <MenuItem Header="Restore"
-                                                  Style="{StaticResource MenuItemStyle}"
-                                                  Click="RestoreMenuItem_Click"/>
+                                                  Style="{StaticResource GlassMenuItemStyle}"
+                                                  Click="RestoreMenuItem_Click">
+                                            <MenuItem.Icon>
+                                                <Ellipse Width="7" Height="7" Fill="#5FDC8B"/>
+                                            </MenuItem.Icon>
+                                        </MenuItem>
                                         <MenuItem Header="Close Source"
-                                                  Style="{StaticResource MenuItemStyle}"
-                                                  Click="CloseSourceMenuItem_Click"/>
-                                        <Separator/>
+                                                  Style="{StaticResource GlassMenuItemStyle}"
+                                                  Click="CloseSourceMenuItem_Click">
+                                            <MenuItem.Icon>
+                                                <Ellipse Width="7" Height="7" Fill="#FFC457"/>
+                                            </MenuItem.Icon>
+                                        </MenuItem>
+                                        <Separator Style="{StaticResource GlassSeparatorStyle}"/>
                                         <MenuItem Header="Remove Card"
-                                                  Style="{StaticResource MenuItemStyle}"
-                                                  Click="RemoveCardMenuItem_Click"/>
+                                                  Style="{StaticResource GlassMenuItemStyle}"
+                                                  Click="RemoveCardMenuItem_Click">
+                                            <MenuItem.Icon>
+                                                <Ellipse Width="7" Height="7" Fill="#EE6975"/>
+                                            </MenuItem.Icon>
+                                        </MenuItem>
                                     </ContextMenu>
                                 </Border.ContextMenu>
 
