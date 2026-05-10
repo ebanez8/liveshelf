@@ -8,6 +8,11 @@ try
 {
     var source = ReadSource(args);
     var input = await Console.In.ReadToEndAsync();
+    if (string.IsNullOrWhiteSpace(input))
+    {
+        input = ReadPayloadArgument(args);
+    }
+
     var normalized = NormalizeEvent(source, input);
     var payload = normalized.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
 
@@ -36,6 +41,25 @@ static string ReadSource(string[] args)
     return "agent";
 }
 
+static string ReadPayloadArgument(string[] args)
+{
+    for (var i = 0; i < args.Length; i++)
+    {
+        if (string.Equals(args[i], "--source", StringComparison.OrdinalIgnoreCase))
+        {
+            i++;
+            continue;
+        }
+
+        if (!string.IsNullOrWhiteSpace(args[i]))
+        {
+            return args[i];
+        }
+    }
+
+    return string.Empty;
+}
+
 static JsonObject NormalizeEvent(string source, string input)
 {
     JsonObject raw;
@@ -48,10 +72,10 @@ static JsonObject NormalizeEvent(string source, string input)
         raw = [];
     }
 
-    var eventName = FirstString(raw, "hook_event_name", "hookEventName", "event_name", "eventName", "event") ?? "Unknown";
+    var eventName = FirstString(raw, "hook_event_name", "hookEventName", "event_name", "eventName", "event", "type") ?? "Unknown";
     var sessionId =
         FirstString(raw, "session_id", "sessionId") ??
-        FirstString(raw, "conversation_id", "conversationId", "thread_id", "threadId") ??
+        FirstString(raw, "conversation_id", "conversationId", "thread_id", "threadId", "thread-id") ??
         FirstString(raw, "transcript_path", "transcriptPath") ??
         FirstString(raw, "cwd") ??
         "unknown";
@@ -60,7 +84,7 @@ static JsonObject NormalizeEvent(string source, string input)
     {
         ["source"] = source,
         ["sessionId"] = sessionId,
-        ["turnId"] = FirstString(raw, "turn_id", "turnId", "submission_id", "submissionId"),
+        ["turnId"] = FirstString(raw, "turn_id", "turnId", "turn-id", "submission_id", "submissionId", "submission-id"),
         ["eventName"] = eventName,
         ["cwd"] = FirstString(raw, "cwd"),
         ["transcriptPath"] = FirstString(raw, "transcript_path", "transcriptPath"),
@@ -68,7 +92,7 @@ static JsonObject NormalizeEvent(string source, string input)
         ["toolUseId"] = FirstString(raw, "tool_use_id", "toolUseId", "call_id", "callId"),
         ["toolInput"] = CloneNode(raw, "tool_input", "toolInput", "tool_args", "toolArgs", "arguments", "args", "input"),
         ["toolResponse"] = CloneNode(raw, "tool_response", "toolResponse", "tool_result", "toolResult", "result", "response", "output"),
-        ["lastAssistantMessage"] = FirstString(raw, "last_assistant_message", "lastAssistantMessage"),
+        ["lastAssistantMessage"] = FirstString(raw, "last_assistant_message", "lastAssistantMessage", "last-assistant-message"),
         ["error"] = FirstString(raw, "error", "message", "stderr", "failure"),
         ["filePath"] = FirstString(raw, "file_path", "filePath", "filename", "path"),
         ["filesChanged"] = FirstInt(raw, "files_changed", "filesChanged", "changed_files_count", "changedFilesCount"),

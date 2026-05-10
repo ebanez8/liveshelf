@@ -1,6 +1,9 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Media;
+using Brush = System.Windows.Media.Brush;
+using Brushes = System.Windows.Media.Brushes;
+using Color = System.Windows.Media.Color;
 
 namespace LiveShelf;
 
@@ -23,6 +26,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     private string _detailText = string.Empty;
     private string _mediaSourceTitle = string.Empty;
     private string _mediaSessionId = string.Empty;
+    private string _mediaProgressBarText = string.Empty;
     private string _acknowledgedAgentSignalKey = string.Empty;
     private string _currentAgentSignalKey = string.Empty;
     private string _linkedAgentKey = string.Empty;
@@ -280,6 +284,10 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
     public Visibility ClosedOverlayVisibility => IsSourceAlive ? Visibility.Collapsed : Visibility.Visible;
 
+    public Visibility HeaderVisibility => IsMediaCard ? Visibility.Collapsed : Visibility.Visible;
+
+    public Visibility PreviewVisibility => IsMediaCard ? Visibility.Collapsed : Visibility.Visible;
+
     public string BadgeText
     {
         get => _badgeText;
@@ -311,7 +319,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
         }
     }
 
-    public Visibility BadgeVisibility => string.IsNullOrWhiteSpace(BadgeText)
+    public Visibility BadgeVisibility => IsMediaCard || string.IsNullOrWhiteSpace(BadgeText)
         ? Visibility.Collapsed
         : Visibility.Visible;
 
@@ -328,12 +336,17 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
             _statusText = value;
             OnPropertyChanged(nameof(StatusText));
             OnPropertyChanged(nameof(StatusTextVisibility));
+            OnPropertyChanged(nameof(HeaderStatusTextVisibility));
         }
     }
 
     public Visibility StatusTextVisibility => string.IsNullOrWhiteSpace(StatusText)
         ? Visibility.Collapsed
         : Visibility.Visible;
+
+    public Visibility HeaderStatusTextVisibility => !IsMediaCard && !string.IsNullOrWhiteSpace(StatusText)
+        ? Visibility.Visible
+        : Visibility.Collapsed;
 
     public string DetailText
     {
@@ -348,12 +361,17 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
             _detailText = value;
             OnPropertyChanged(nameof(DetailText));
             OnPropertyChanged(nameof(DetailTextVisibility));
+            OnPropertyChanged(nameof(HeaderDetailTextVisibility));
         }
     }
 
     public Visibility DetailTextVisibility => string.IsNullOrWhiteSpace(DetailText)
         ? Visibility.Collapsed
         : Visibility.Visible;
+
+    public Visibility HeaderDetailTextVisibility => !IsMediaCard && !string.IsNullOrWhiteSpace(DetailText)
+        ? Visibility.Visible
+        : Visibility.Collapsed;
 
     public bool IsMediaCard
     {
@@ -368,6 +386,12 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
             _isMediaCard = value;
             OnPropertyChanged(nameof(IsMediaCard));
             OnPropertyChanged(nameof(CardTitle));
+            OnPropertyChanged(nameof(BadgeVisibility));
+            OnPropertyChanged(nameof(HeaderVisibility));
+            OnPropertyChanged(nameof(PreviewVisibility));
+            OnPropertyChanged(nameof(HeaderStatusTextVisibility));
+            OnPropertyChanged(nameof(HeaderDetailTextVisibility));
+            OnPropertyChanged(nameof(MediaInfoVisibility));
             OnPropertyChanged(nameof(MediaProgressVisibility));
             OnPropertyChanged(nameof(MediaControlsVisibility));
         }
@@ -416,13 +440,37 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
             _hasMediaProgress = value;
             OnPropertyChanged(nameof(HasMediaProgress));
+            OnPropertyChanged(nameof(HeaderMediaProgressVisibility));
             OnPropertyChanged(nameof(MediaProgressVisibility));
         }
     }
 
+    public Visibility HeaderMediaProgressVisibility => !IsMediaCard && HasMediaProgress
+        ? Visibility.Visible
+        : Visibility.Collapsed;
+
     public Visibility MediaProgressVisibility => IsMediaCard && HasMediaProgress
         ? Visibility.Visible
         : Visibility.Collapsed;
+
+    public Visibility MediaInfoVisibility => IsMediaCard
+        ? Visibility.Visible
+        : Visibility.Collapsed;
+
+    public string MediaProgressBarText
+    {
+        get => _mediaProgressBarText;
+        private set
+        {
+            if (_mediaProgressBarText == value)
+            {
+                return;
+            }
+
+            _mediaProgressBarText = value;
+            OnPropertyChanged(nameof(MediaProgressBarText));
+        }
+    }
 
     public bool CanToggleMediaPlayback
     {
@@ -440,9 +488,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
         }
     }
 
-    public Visibility MediaControlsVisibility => IsMediaCard && CanToggleMediaPlayback
-        ? Visibility.Visible
-        : Visibility.Collapsed;
+    public Visibility MediaControlsVisibility => Visibility.Collapsed;
 
     public string MediaPlayPauseText
     {
@@ -678,6 +724,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
         MediaSourceTitle = sourceTitle;
         MediaProgressPercent = Math.Clamp(progress * 100, 0, 100);
         HasMediaProgress = hasProgress;
+        MediaProgressBarText = BuildMediaProgressBar(progress, hasProgress);
         CanToggleMediaPlayback = canTogglePlayback;
         MediaPlayPauseText = kind == ShelfBadgeKind.Playing ? "Pause" : "Play";
 
@@ -708,12 +755,25 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
         MediaSourceTitle = string.Empty;
         HasMediaProgress = false;
         MediaProgressPercent = 0;
+        MediaProgressBarText = string.Empty;
         CanToggleMediaPlayback = false;
 
         if (BadgeKind is ShelfBadgeKind.Playing or ShelfBadgeKind.Paused)
         {
             SetBadge(ShelfBadgeKind.None);
         }
+    }
+
+    private static string BuildMediaProgressBar(double progress, bool hasProgress)
+    {
+        if (!hasProgress)
+        {
+            return string.Empty;
+        }
+
+        const int segments = 10;
+        var completed = Math.Clamp((int)Math.Round(progress * segments), 0, segments);
+        return new string('━', completed) + new string('─', segments - completed);
     }
 }
 

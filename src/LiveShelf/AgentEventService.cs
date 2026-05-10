@@ -167,6 +167,13 @@ internal sealed class AgentEventService : IDisposable
             return;
         }
 
-        EventReceived?.Invoke(this, agentEvent);
+        try
+        {
+            EventReceived?.Invoke(this, agentEvent);
+        }
+        catch (Exception ex)
+        {
+            CrashLogger.Log(ex);
+        }
     }
 }

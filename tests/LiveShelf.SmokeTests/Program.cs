@@ -108,6 +108,9 @@ AssertTrue(
 AssertTrue(
     "media cards must default to preview mode",
     !SourceWindowPolicyRules.SupportsAutomaticInteractiveMode(SourceWindowPolicy.Media));
+AssertTrue(
+    "media cards must park their source windows offscreen",
+    !SourceWindowPolicyRules.RequiresSourceSizePreservation(SourceWindowPolicy.Media));
 
 var liveParkFlags = SourceWindowPolicyRules.GetLivePreviewParkFlags();
 AssertTrue(
@@ -179,6 +182,20 @@ AssertTrue(
     "codex hook installer must preserve following toml sections",
     migratedCodexConfig.Contains("[hooks.state]", StringComparison.Ordinal));
 
+var ensureCodexConfig = installerType.GetMethod(
+    "EnsureCodexConfig",
+    BindingFlags.NonPublic | BindingFlags.Static);
+var notifyConfigPath = Path.Combine(AppContext.BaseDirectory, $"codex-notify-config-{Guid.NewGuid():N}.toml");
+File.WriteAllText(notifyConfigPath, "[features]" + Environment.NewLine + "prevent_idle_sleep = true" + Environment.NewLine);
+ensureCodexConfig?.Invoke(null, [notifyConfigPath, @"C:\Users\Evan Z\AppData\Local\LiveShelf\liveshelf-bridge.exe"]);
+var notifyCodexConfig = File.ReadAllText(notifyConfigPath);
+AssertTrue(
+    "codex installer should register notify fallback through the bridge",
+    notifyCodexConfig.Contains("notify = [\"C:\\\\Users\\\\Evan Z\\\\AppData\\\\Local\\\\LiveShelf\\\\liveshelf-bridge.exe\", \"--source\", \"codex\"]", StringComparison.Ordinal));
+AssertTrue(
+    "codex installer should enable TUI notifications for notify fallback",
+    notifyCodexConfig.Contains("notification_condition = \"always\"", StringComparison.Ordinal));
+
 var buildCodexShimCommand = installerType.GetMethod(
     "BuildCodexShimCommand",
     BindingFlags.NonPublic | BindingFlags.Static);
@@ -198,6 +215,9 @@ AssertTrue(
 AssertTrue(
     "codex hooks should include PostToolUse",
     hooksRoot?["PostToolUse"] is JsonArray);
+AssertTrue(
+    "codex hooks should include StopFailure",
+    hooksRoot?["StopFailure"] is JsonArray);
 AssertTrue(
     "codex PostToolUse matcher should cover all Codex tool names",
     hooksRoot?["PostToolUse"]?[0]?["matcher"]?.GetValue<string>() == ".*");

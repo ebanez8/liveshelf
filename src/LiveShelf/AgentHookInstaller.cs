@@ -25,7 +25,7 @@ internal static class AgentHookInstaller
         var codexDirectory = Path.Combine(profile, ".codex");
         Directory.CreateDirectory(codexDirectory);
 
-        EnsureCodexHooksFeature(Path.Combine(codexDirectory, "config.toml"));
+        EnsureCodexConfig(Path.Combine(codexDirectory, "config.toml"), bridgePath);
         WriteHookConfig(
             Path.Combine(codexDirectory, "hooks.json"),
             BuildCodexHooks(BuildCodexShimCommand(shimPath)));
@@ -147,7 +147,7 @@ internal static class AgentHookInstaller
             Environment.NewLine,
             [
                 "@echo off",
-                $"\"{bridgePath}\" --source codex",
+                $"\"{bridgePath}\" --source codex %*",
                 "exit /b 0",
                 string.Empty
             ]);
@@ -164,6 +164,15 @@ internal static class AgentHookInstaller
     {
         var text = File.Exists(configPath) ? File.ReadAllText(configPath) : string.Empty;
         var updated = SetFeatureFlag(text, "hooks", "true", removeKeys: ["codex_hooks"]);
+        File.WriteAllText(configPath, updated);
+    }
+
+    private static void EnsureCodexConfig(string configPath, string bridgePath)
+    {
+        var text = File.Exists(configPath) ? File.ReadAllText(configPath) : string.Empty;
+        var updated = SetFeatureFlag(text, "hooks", "true", removeKeys: ["codex_hooks"]);
+        updated = SetTopLevelArray(updated, "notify", [bridgePath, "--source", "codex"]);
+        updated = SetSectionKey(updated, "tui", "notification_condition", "\"always\"");
         File.WriteAllText(configPath, updated);
     }
 
@@ -253,7 +262,9 @@ internal static class AgentHookInstaller
                 ["PreToolUse"] = HookArray(command, toolMatcher, timeoutSeconds: 5),
                 ["PostToolUse"] = HookArray(command, toolMatcher, timeoutSeconds: 5),
                 ["PermissionRequest"] = HookArray(command, timeoutSeconds: 5),
-                ["Stop"] = HookArray(command)
+                ["Notification"] = HookArray(command),
+                ["Stop"] = HookArray(command),
+                ["StopFailure"] = HookArray(command)
             }
         };
     }
@@ -395,6 +406,110 @@ internal static class AgentHookInstaller
         }
 
         return string.Join(newline, lines) + newline;
+    }
+
+    private static string SetTopLevelArray(string text, string key, IReadOnlyList<string> values)
+    {
+        var newline = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        var lines = Regex.Split(text, "\r\n|\n").ToList();
+        if (lines.Count > 0 && lines[^1].Length == 0)
+        {
+            lines.RemoveAt(lines.Count - 1);
+        }
+
+        var replacement = $"{key} = {FormatTomlArray(values)}";
+        var firstSection = lines.FindIndex(line => Regex.IsMatch(line, @"^\s*\[[^\]]+\]\s*(?:#.*)?$"));
+        if (firstSection < 0)
+        {
+            firstSection = lines.Count;
+        }
+
+        for (var i = 0; i < firstSection; i++)
+        {
+            if (Regex.IsMatch(lines[i], $@"^\s*{Regex.Escape(key)}\s*=", RegexOptions.IgnoreCase))
+            {
+                lines[i] = replacement;
+                return string.Join(newline, lines) + newline;
+            }
+        }
+
+        lines.Insert(firstSection, replacement);
+        if (firstSection + 1 < lines.Count && !string.IsNullOrWhiteSpace(lines[firstSection + 1]))
+        {
+            lines.Insert(firstSection + 1, string.Empty);
+        }
+
+        return string.Join(newline, lines) + newline;
+    }
+
+    private static string SetSectionKey(string text, string sectionName, string key, string value)
+    {
+        var newline = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        var lines = Regex.Split(text, "\r\n|\n").ToList();
+        if (lines.Count > 0 && lines[^1].Length == 0)
+        {
+            lines.RemoveAt(lines.Count - 1);
+        }
+
+        var sectionStart = -1;
+        var sectionEnd = lines.Count;
+        var sectionPattern = $@"^\s*\[{Regex.Escape(sectionName)}\]\s*(?:#.*)?$";
+        for (var i = 0; i < lines.Count; i++)
+        {
+            if (!Regex.IsMatch(lines[i], sectionPattern, RegexOptions.IgnoreCase))
+            {
+                continue;
+            }
+
+            sectionStart = i;
+            sectionEnd = lines.Count;
+            for (var j = i + 1; j < lines.Count; j++)
+            {
+                if (Regex.IsMatch(lines[j], @"^\s*\[[^\]]+\]\s*(?:#.*)?$"))
+                {
+                    sectionEnd = j;
+                    break;
+                }
+            }
+
+            break;
+        }
+
+        if (sectionStart < 0)
+        {
+            if (lines.Count > 0 && !string.IsNullOrWhiteSpace(lines[^1]))
+            {
+                lines.Add(string.Empty);
+            }
+
+            lines.Add($"[{sectionName}]");
+            lines.Add($"{key} = {value}");
+            return string.Join(newline, lines) + newline;
+        }
+
+        for (var i = sectionStart + 1; i < sectionEnd; i++)
+        {
+            if (Regex.IsMatch(lines[i], $@"^\s*{Regex.Escape(key)}\s*=", RegexOptions.IgnoreCase))
+            {
+                lines[i] = $"{key} = {value}";
+                return string.Join(newline, lines) + newline;
+            }
+        }
+
+        lines.Insert(sectionStart + 1, $"{key} = {value}");
+        return string.Join(newline, lines) + newline;
+    }
+
+    private static string FormatTomlArray(IReadOnlyList<string> values)
+    {
+        return "[" + string.Join(", ", values.Select(value => $"\"{EscapeTomlString(value)}\"")) + "]";
+    }
+
+    private static string EscapeTomlString(string value)
+    {
+        return value
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\"", "\\\"", StringComparison.Ordinal);
     }
 
     private static AgentHookInstallResult TestBridge(string bridgePath, string source)

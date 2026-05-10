@@ -20,6 +20,8 @@ internal static class NativeMethods
     internal const int WM_RBUTTONUP = 0x0205;
     internal const int WM_MOUSEWHEEL = 0x020A;
 
+    internal const int VK_LBUTTON = 0x01;
+
     internal const int MOD_SHIFT = 0x0004;
 
     internal const int MOD_ALT = 0x0001;
@@ -99,6 +101,9 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool GetCursorPos(out POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    internal static extern short GetAsyncKeyState(int vKey);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

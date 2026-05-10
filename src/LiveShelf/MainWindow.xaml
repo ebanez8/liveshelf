@@ -307,9 +307,11 @@
                                     RenderTransformOrigin="0.5,0.5"
                                     Loaded="Card_Loaded"
                                     Unloaded="Card_Unloaded"
+                                    MouseLeftButtonDown="Card_MouseLeftButtonDown"
                                     MouseLeftButtonUp="Card_MouseLeftButtonUp"
                                     MouseEnter="Card_MouseEnter"
                                     MouseLeave="Card_MouseLeave"
+                                    MouseMove="Card_MouseMove"
                                     MouseWheel="Card_MouseWheel"
                                     IsManipulationEnabled="True"
                                     ManipulationStarting="Card_ManipulationStarting"
@@ -347,7 +349,7 @@
                                         <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
 
-                                    <Grid Grid.Row="0" Margin="0,0,0,7">
+                                    <Grid Grid.Row="0" Margin="0,0,0,7" Visibility="{Binding HeaderVisibility}">
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
@@ -375,7 +377,7 @@
                                                    FontSize="10"
                                                    Margin="0,3,0,0"
                                                    TextTrimming="CharacterEllipsis"
-                                                   Visibility="{Binding StatusTextVisibility}"/>
+                                                   Visibility="{Binding HeaderStatusTextVisibility}"/>
 
                                         <TextBlock Grid.Row="2"
                                                    Grid.Column="0"
@@ -385,7 +387,7 @@
                                                    FontSize="10"
                                                    Margin="0,2,0,0"
                                                    TextTrimming="CharacterEllipsis"
-                                                   Visibility="{Binding DetailTextVisibility}"/>
+                                                   Visibility="{Binding HeaderDetailTextVisibility}"/>
 
                                         <ProgressBar Grid.Row="3"
                                                      Grid.Column="0"
@@ -395,7 +397,7 @@
                                                      Maximum="100"
                                                      Value="{Binding MediaProgressPercent, Mode=OneWay}"
                                                      Style="{StaticResource MediaProgressStyle}"
-                                                     Visibility="{Binding MediaProgressVisibility}"/>
+                                                     Visibility="{Binding HeaderMediaProgressVisibility}"/>
 
                                         <StackPanel Grid.Row="0"
                                                     Grid.Column="1"
@@ -443,7 +445,47 @@
                                                 MouseWheel="PreviewSurface_MouseWheel"
                                                 KeyDown="PreviewSurface_KeyDown"
                                                 KeyUp="PreviewSurface_KeyUp"
-                                                TextInput="PreviewSurface_TextInput"/>
+                                                TextInput="PreviewSurface_TextInput"
+                                                Visibility="{Binding PreviewVisibility}"/>
+
+                                        <Border Background="Transparent"
+                                                CornerRadius="4"
+                                                Padding="2,1,2,0"
+                                                Visibility="{Binding MediaInfoVisibility}">
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                </Grid.RowDefinitions>
+                                                <TextBlock Grid.Row="0"
+                                                           Text="{Binding MediaSourceTitle}"
+                                                           FontSize="12"
+                                                           FontWeight="SemiBold"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Grid.Row="1"
+                                                           Text="{Binding StatusText}"
+                                                           Foreground="#EEF2F7"
+                                                           FontSize="10"
+                                                           Margin="0,4,0,0"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Grid.Row="2"
+                                                           Text="{Binding DetailText}"
+                                                           Foreground="{StaticResource TextMuted}"
+                                                           FontSize="10"
+                                                           Margin="0,3,0,0"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Grid.Row="3"
+                                                           Text="{Binding MediaProgressBarText}"
+                                                           Foreground="#59D6CE"
+                                                           FontFamily="Consolas"
+                                                           FontSize="13"
+                                                           Margin="0,6,0,0"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Visibility="{Binding MediaProgressVisibility}"/>
+                                            </Grid>
+                                        </Border>
 
                                         <Border Background="#C40B0D11"
                                                 CornerRadius="4"

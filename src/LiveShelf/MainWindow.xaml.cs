@@ -13,6 +13,14 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using Brush = System.Windows.Media.Brush;
+using Button = System.Windows.Controls.Button;
+using Color = System.Windows.Media.Color;
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
+using MouseEventArgs = System.Windows.Input.MouseEventArgs;
+using Panel = System.Windows.Controls.Panel;
+using Point = System.Windows.Point;
+using ScrollBar = System.Windows.Controls.Primitives.ScrollBar;
 
 namespace LiveShelf;
 
@@ -40,6 +48,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const int ZoomAnimationMs = 520;
     private const int InteractiveActivationDelayMs = 500;
     private const int AttentionAnimationMs = 720;
+    private const int ReorderAnimationMs = 170;
+    private const int DragShelfPollMs = 80;
+    private const int DragShelfDwellMs = 420;
+    private const int DragShelfHotZoneSize = 120;
+    private const int DragShelfTitleBandHeight = 96;
 
     private static readonly Color CardBackgroundColor = Color.FromArgb(110, 43, 48, 56);
     private static readonly Color CardBorderColor = Color.FromArgb(50, 255, 255, 255);
@@ -55,6 +68,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly Dictionary<ShelvedWindow, FrameworkElement> _previewElements = [];
     private readonly DispatcherTimer _peekCollapseTimer;
     private readonly DispatcherTimer _interactiveExitTimer;
+    private readonly DispatcherTimer _dragShelfTimer;
     private ShelvedWindow? _pendingInteractiveItem;
     private HwndSource? _source;
     private IntPtr _windowHandle;
@@ -67,8 +81,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _hasRestoredShelvedWindowsForShutdown;
     private DateTime _thumbnailAnimationRefreshUntilUtc;
     private DateTime _interactiveExitSuppressedUntilUtc;
+    private DateTime _dragShelfCandidateEnteredUtc;
     private int _shelfAnimationGeneration;
     private int _interactiveActivationGeneration;
+    private IntPtr _dragShelfCandidateHwnd;
+    private bool _dragShelfTriggeredWhilePressed;
+    private Point _cardDragStartPoint;
+    private ShelvedWindow? _cardDragItem;
+    private bool _isReorderingCards;
     private DateTime _lastHitTestLogUtc = DateTime.MinValue;
     private string _lastHitTestLogKey = string.Empty;
     private string _statusMessage = "Ready";
@@ -93,6 +113,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Interval = TimeSpan.FromMilliseconds(220)
         };
         _interactiveExitTimer.Tick += InteractiveExitTimer_Tick;
+
+        _dragShelfTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(DragShelfPollMs)
+        };
+        _dragShelfTimer.Tick += DragShelfTimer_Tick;
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -146,6 +172,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _shelver.StatusChanged += (_, message) => StatusMessage = message;
         _shelver.ThumbnailRefreshRequested += (_, _) => QueueThumbnailRefresh();
         _shelver.AttentionRequested += (_, item) => Dispatcher.InvokeAsync(() => RunAttentionAlert(item));
+        _shelver.AgentCompletionRequested += (_, item) =>
+        {
+            if (_isShelfHidden)
+            {
+                SetShelfHidden(false);
+                Dispatcher.InvokeAsync(() => RunAttentionAlert(item), DispatcherPriority.Loaded);
+            }
+        };
 
         RegisterHotkeys();
         PositionShelfWindow(animate: false);
@@ -154,6 +188,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
         SystemEvents.DisplaySettingsChanged += SystemEvents_DisplaySettingsChanged;
+        _dragShelfTimer.Start();
         PositionShelfWindow(animate: false);
         QueueThumbnailRefresh();
     }
@@ -165,6 +200,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         NativeMethods.UnregisterHotKey(_windowHandle, ShelfHotkeyId);
         NativeMethods.UnregisterHotKey(_windowHandle, ToggleShelfHotkeyId);
         NativeMethods.UnregisterHotKey(_windowHandle, EmergencyRestoreHotkeyId);
+        _dragShelfTimer.Stop();
         _source?.RemoveHook(WndProc);
         RestoreShelvedWindowsForShutdown();
     }
@@ -175,6 +211,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (_zoomedItem is { IsInteractive: true } item)
         {
+            if (DateTime.UtcNow < _interactiveExitSuppressedUntilUtc)
+            {
+                return;
+            }
+
             var foreground = NativeMethods.GetForegroundWindow();
             if (foreground == item.SourceHwnd)
             {
@@ -511,10 +552,58 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private void Card_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement card || GetItemFromSender(sender) is not { } item)
+        {
+            return;
+        }
+
+        _cardDragItem = item;
+        _cardDragStartPoint = e.GetPosition(this);
+        _isReorderingCards = false;
+        Panel.SetZIndex(card, 50);
+        card.CaptureMouse();
+    }
+
     private void Card_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
         if (GetItemFromSender(sender) is { } item)
         {
+            if (sender is FrameworkElement card && card.IsMouseCaptured)
+            {
+                card.ReleaseMouseCapture();
+            }
+
+            if (_isReorderingCards)
+            {
+                var dropPoint = e.GetPosition(this);
+                var fromIndex = Items.IndexOf(item);
+                var toIndex = GetCardDropIndex(item, dropPoint);
+                var oldTops = CaptureCardTops();
+
+                if (fromIndex >= 0 && toIndex >= 0 && fromIndex != toIndex)
+                {
+                    Items.Move(fromIndex, toIndex);
+                    AnimateReorderedCards(oldTops, item);
+                    PositionShelfWindow();
+                    QueueThumbnailRefresh();
+                }
+
+                AnimateDraggedCardHome(item);
+                _cardDragItem = null;
+                _isReorderingCards = false;
+                e.Handled = true;
+                return;
+            }
+
+            _cardDragItem = null;
+            if (sender is FrameworkElement releasedCard)
+            {
+                Panel.SetZIndex(releasedCard, item.IsExpanded ? 10 : 0);
+                releasedCard.Opacity = 1;
+            }
+
             if (item.IsInteractive)
             {
                 return;
@@ -525,10 +614,35 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private void Card_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (_cardDragItem is null || e.LeftButton != MouseButtonState.Pressed)
+        {
+            return;
+        }
+
+        var position = e.GetPosition(this);
+        if (!_isReorderingCards &&
+            Math.Abs(position.X - _cardDragStartPoint.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(position.Y - _cardDragStartPoint.Y) < SystemParameters.MinimumVerticalDragDistance)
+        {
+            return;
+        }
+
+        _isReorderingCards = true;
+        UpdateDraggedCardVisual(_cardDragItem, position);
+        e.Handled = true;
+    }
+
     private void Card_MouseEnter(object sender, MouseEventArgs e)
     {
         if (sender is FrameworkElement card && GetItemFromSender(sender) is { } item)
         {
+            if (item.IsMediaCard)
+            {
+                return;
+            }
+
             BeginPeek(item, card);
         }
     }
@@ -550,6 +664,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void Card_MouseWheel(object sender, MouseWheelEventArgs e)
     {
         if (GetItemFromSender(sender) is not { } item)
+        {
+            return;
+        }
+
+        if (item.IsMediaCard)
         {
             return;
         }
@@ -581,6 +700,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void Card_ManipulationDelta(object sender, ManipulationDeltaEventArgs e)
     {
         if (GetItemFromSender(sender) is not { } item || item != _peekedItem)
+        {
+            return;
+        }
+
+        if (item.IsMediaCard)
         {
             return;
         }
@@ -1012,6 +1136,230 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ClearPeek();
     }
 
+    private void DragShelfTimer_Tick(object? sender, EventArgs e)
+    {
+        var leftButtonDown = (NativeMethods.GetAsyncKeyState(NativeMethods.VK_LBUTTON) & unchecked((short)0x8000)) != 0;
+        if (!leftButtonDown)
+        {
+            ResetDragShelfCandidate();
+            _dragShelfTriggeredWhilePressed = false;
+            return;
+        }
+
+        if (_dragShelfTriggeredWhilePressed ||
+            !NativeMethods.GetCursorPos(out var point) ||
+            !IsPointInDragShelfHotZone(point))
+        {
+            ResetDragShelfCandidate();
+            return;
+        }
+
+        var foreground = NativeMethods.GetForegroundWindow();
+        if (foreground == IntPtr.Zero ||
+            foreground == _windowHandle ||
+            !NativeMethods.IsNormalAppWindow(foreground, _windowHandle, out _) ||
+            !IsLikelyTitleBandDrag(foreground, point))
+        {
+            ResetDragShelfCandidate();
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        if (foreground != _dragShelfCandidateHwnd)
+        {
+            _dragShelfCandidateHwnd = foreground;
+            _dragShelfCandidateEnteredUtc = now;
+            return;
+        }
+
+        if ((now - _dragShelfCandidateEnteredUtc).TotalMilliseconds < DragShelfDwellMs)
+        {
+            return;
+        }
+
+        _dragShelfTriggeredWhilePressed = true;
+        ResetDragShelfCandidate();
+        ShelfForegroundWindow();
+    }
+
+    private static bool IsPointInDragShelfHotZone(NativeMethods.POINT point)
+    {
+        var virtualScreen = NativeMethods.GetVirtualScreenRect();
+        return point.X >= virtualScreen.Right - DragShelfHotZoneSize &&
+               point.X <= virtualScreen.Right &&
+               point.Y >= virtualScreen.Bottom - DragShelfHotZoneSize &&
+               point.Y <= virtualScreen.Bottom;
+    }
+
+    private static bool IsLikelyTitleBandDrag(IntPtr hwnd, NativeMethods.POINT point)
+    {
+        if (!NativeMethods.GetWindowRect(hwnd, out var rect))
+        {
+            return false;
+        }
+
+        return point.X >= rect.Left &&
+               point.X <= rect.Right &&
+               point.Y >= rect.Top &&
+               point.Y <= rect.Bottom &&
+               point.Y - rect.Top <= DragShelfTitleBandHeight;
+    }
+
+    private void ResetDragShelfCandidate()
+    {
+        _dragShelfCandidateHwnd = IntPtr.Zero;
+        _dragShelfCandidateEnteredUtc = DateTime.MinValue;
+    }
+
+    private int GetCardDropIndex(ShelvedWindow item, Point position)
+    {
+        var fromIndex = Items.IndexOf(item);
+        if (fromIndex < 0 || Items.Count < 2)
+        {
+            return fromIndex;
+        }
+
+        var toIndex = Items.Count - 1;
+        for (var index = 0; index < Items.Count; index++)
+        {
+            if (ReferenceEquals(Items[index], item))
+            {
+                continue;
+            }
+
+            if (!_cardElements.TryGetValue(Items[index], out var card))
+            {
+                continue;
+            }
+
+            Rect bounds;
+            try
+            {
+                bounds = card.TransformToAncestor(this)
+                    .TransformBounds(new Rect(0, 0, card.ActualWidth, card.ActualHeight));
+            }
+            catch (InvalidOperationException)
+            {
+                continue;
+            }
+
+            if (position.Y < bounds.Top + bounds.Height / 2)
+            {
+                toIndex = index;
+                break;
+            }
+        }
+
+        return toIndex;
+    }
+
+    private void UpdateDraggedCardVisual(ShelvedWindow item, Point position)
+    {
+        if (!_cardElements.TryGetValue(item, out var card))
+        {
+            return;
+        }
+
+        EnsureMutableCardTransform(card);
+        if (GetTransform<TranslateTransform>(card) is { } translate)
+        {
+            translate.BeginAnimation(TranslateTransform.YProperty, null);
+            translate.Y = position.Y - _cardDragStartPoint.Y;
+        }
+
+        card.Opacity = 0.94;
+        Panel.SetZIndex(card, 50);
+    }
+
+    private void AnimateDraggedCardHome(ShelvedWindow item)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (!_cardElements.TryGetValue(item, out var card))
+            {
+                return;
+            }
+
+            EnsureMutableCardTransform(card);
+            if (GetTransform<TranslateTransform>(card) is { } translate)
+            {
+                AnimateDouble(translate, TranslateTransform.YProperty, 0, ReorderAnimationMs, () =>
+                {
+                    Panel.SetZIndex(card, item.IsExpanded ? 10 : 0);
+                    card.Opacity = 1;
+                });
+            }
+            else
+            {
+                Panel.SetZIndex(card, item.IsExpanded ? 10 : 0);
+                card.Opacity = 1;
+            }
+        }, DispatcherPriority.Loaded);
+    }
+
+    private Dictionary<ShelvedWindow, double> CaptureCardTops()
+    {
+        var tops = new Dictionary<ShelvedWindow, double>();
+        foreach (var pair in _cardElements)
+        {
+            if (TryGetCardTop(pair.Value, out var top))
+            {
+                tops[pair.Key] = top;
+            }
+        }
+
+        return tops;
+    }
+
+    private void AnimateReorderedCards(Dictionary<ShelvedWindow, double> oldTops, ShelvedWindow? excludedItem = null)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            foreach (var pair in _cardElements)
+            {
+                if (ReferenceEquals(pair.Key, excludedItem))
+                {
+                    continue;
+                }
+
+                if (!oldTops.TryGetValue(pair.Key, out var oldTop) ||
+                    !TryGetCardTop(pair.Value, out var newTop))
+                {
+                    continue;
+                }
+
+                var delta = oldTop - newTop;
+                if (Math.Abs(delta) < 0.5)
+                {
+                    continue;
+                }
+
+                EnsureMutableCardTransform(pair.Value);
+                if (GetTransform<TranslateTransform>(pair.Value) is { } translate)
+                {
+                    translate.Y = delta;
+                    AnimateDouble(translate, TranslateTransform.YProperty, 0, ReorderAnimationMs);
+                }
+            }
+        }, DispatcherPriority.Loaded);
+    }
+
+    private bool TryGetCardTop(FrameworkElement card, out double top)
+    {
+        top = 0;
+        try
+        {
+            var bounds = card.TransformToAncestor(this)
+                .TransformBounds(new Rect(0, 0, card.ActualWidth, card.ActualHeight));
+            top = bounds.Top;
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
     private void ToggleShelfVisibility()
     {
         SetShelfHidden(!_isShelfHidden);
@@ -1049,7 +1397,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void BeginPeek(ShelvedWindow item, FrameworkElement card)
     {
-        if (_isShelfHidden || !item.IsSourceAlive)
+        if (_isShelfHidden || !item.IsSourceAlive || item.IsMediaCard)
         {
             return;
         }
@@ -1133,7 +1481,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void ActivateZoom(ShelvedWindow item)
     {
-        if (_isShelfHidden || item != _peekedItem || !item.IsSourceAlive)
+        if (_isShelfHidden || item != _peekedItem || !item.IsSourceAlive || item.IsMediaCard)
         {
             return;
         }

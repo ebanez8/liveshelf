@@ -23,7 +23,7 @@ internal static class SourceWindowPolicyRules
 
     internal static bool RequiresSourceSizePreservation(SourceWindowPolicy policy)
     {
-        return policy is SourceWindowPolicy.Browser or SourceWindowPolicy.Media;
+        return policy is SourceWindowPolicy.Browser;
     }
 
     internal static bool KeepsLiveThumbnailVisibleWhenInteractive(SourceWindowPolicy policy)
@@ -33,7 +33,7 @@ internal static class SourceWindowPolicyRules
 
     internal static bool SupportsAutomaticInteractiveMode(SourceWindowPolicy policy)
     {
-        return !RequiresSourceSizePreservation(policy);
+        return policy is SourceWindowPolicy.Normal;
     }
 
     internal static int GetLivePreviewParkFlags()

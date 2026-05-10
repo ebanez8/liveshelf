@@ -4,6 +4,7 @@ using System.IO;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Threading;
+using MessageBox = System.Windows.MessageBox;
 
 namespace LiveShelf;
 
@@ -64,6 +65,8 @@ internal sealed class WindowShelver
     public event EventHandler? ThumbnailRefreshRequested;
 
     public event EventHandler<ShelvedWindow>? AttentionRequested;
+
+    public event EventHandler<ShelvedWindow>? AgentCompletionRequested;
 
     public void ShelfForegroundWindow()
     {
@@ -263,7 +266,13 @@ internal sealed class WindowShelver
 
         if (item.IsPreviewStatusOnly)
         {
-            UpdateThumbnailVisibility(item, visible: false);
+            HideThumbnail(item);
+            return;
+        }
+
+        if (item.IsMediaCard)
+        {
+            HideThumbnail(item);
             return;
         }
 
@@ -271,7 +280,11 @@ internal sealed class WindowShelver
         var hasSourceSize = queryResult >= 0 && DwmThumbnailLayout.HasUsableSourceSize(sourceSize);
         if (hasSourceSize)
         {
-            destination = DwmThumbnailLayout.ComputeContainDestination(destination, sourceSize);
+            if (!item.IsZoomed && !item.IsInteractive)
+            {
+                destination = DwmThumbnailLayout.ComputeContainDestination(destination, sourceSize);
+            }
+
             ObserveThumbnailSourceSize(item, sourceSize);
         }
         else
@@ -479,15 +492,31 @@ internal sealed class WindowShelver
         NativeMethods.DwmUpdateThumbnailProperties(item.ThumbnailHandle, ref properties);
     }
 
+    private static void HideThumbnail(ShelvedWindow item)
+    {
+        if (item.ThumbnailHandle == IntPtr.Zero || !item.IsSourceAlive)
+        {
+            return;
+        }
+
+        var properties = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
+        {
+            dwFlags = NativeMethods.DWM_TNP_VISIBLE | NativeMethods.DWM_TNP_OPACITY,
+            opacity = 0,
+            fVisible = false
+        };
+
+        NativeMethods.DwmUpdateThumbnailProperties(item.ThumbnailHandle, ref properties);
+    }
+
     private static bool ShouldShowThumbnail(ShelvedWindow item)
     {
-        if (item.IsPreviewStatusOnly)
+        if (item.IsPreviewStatusOnly || item.IsMediaCard)
         {
             return false;
         }
 
-        return !item.IsInteractive ||
-               SourceWindowPolicyRules.KeepsLiveThumbnailVisibleWhenInteractive(item.SourceWindowPolicy);
+        return !item.IsMediaCard;
     }
 
     private static NativeMethods.RECT ParkSourceWindow(
@@ -600,19 +629,20 @@ internal sealed class WindowShelver
             return;
         }
 
-        NativeMethods.ShowWindow(item.SourceHwnd, NativeMethods.SW_RESTORE);
+        var parkedBounds = item.ParkedBounds.Width > 0 && item.ParkedBounds.Height > 0
+            ? item.ParkedBounds
+            : GetParkedSourceRect(item.OriginalPlacement.NormalPosition);
+
         Trace.WriteLine(
-            $"LiveShelf SetForegroundWindow normal interactive hwnd=0x{item.SourceHwnd.ToInt64():X} card={item.Id}");
+            $"LiveShelf parked normal interactive hwnd=0x{item.SourceHwnd.ToInt64():X} card={item.Id}");
         NativeMethods.SetWindowPos(
             item.SourceHwnd,
-            NativeMethods.HWND_TOPMOST,
-            screenBounds.Left,
-            screenBounds.Top,
+            NativeMethods.HWND_BOTTOM,
+            parkedBounds.Left,
+            parkedBounds.Top,
             screenBounds.Width,
             screenBounds.Height,
-            NativeMethods.SWP_SHOWWINDOW);
-        NativeMethods.SetForegroundWindow(item.SourceHwnd);
-        NativeMethods.SetFocus(item.SourceHwnd);
+            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER | NativeMethods.SWP_SHOWWINDOW);
     }
 
     private static void PositionPreparedSource(
@@ -941,6 +971,11 @@ internal sealed class WindowShelver
             if (update.Badge.Notify)
             {
                 AttentionRequested?.Invoke(this, update.Card);
+            }
+
+            if (ShouldRevealShelfForAgentCompletion(update))
+            {
+                AgentCompletionRequested?.Invoke(this, update.Card);
             }
         });
     }
@@ -1310,8 +1345,8 @@ internal sealed class WindowShelver
                 : ShelfBadgeKind.Changed;
         var hasReliableProgress = HasReliableMediaProgress(item, session);
         var progressText = hasReliableProgress ? FormatProgressText(session) : string.Empty;
-        var mediaDetail = FormatMediaDetail(session);
         var sourceTitle = ResolveMediaSourceTitle(item, session);
+        var mediaDetail = FormatMediaDetail(session, sourceTitle);
 
         item.SetMediaStatus(
             session.SessionId,
@@ -1322,6 +1357,7 @@ internal sealed class WindowShelver
             session.Progress,
             hasReliableProgress,
             session.CanTogglePlayPause);
+        HideThumbnail(item);
 
         item.SetSourceWindowPolicy(SourceWindowPolicyRules.Classify(item.ProcessName, item.IsMediaCard));
         if (item.SourceWindowPolicy != previousPolicy)
@@ -1436,11 +1472,17 @@ internal sealed class WindowShelver
         return string.IsNullOrWhiteSpace(fallback) ? processName : fallback;
     }
 
-    private static string FormatMediaDetail(MediaSessionSnapshot session)
+    private static string FormatMediaDetail(MediaSessionSnapshot session, string sourceTitle)
     {
         if (string.IsNullOrWhiteSpace(session.Title))
         {
             return string.Empty;
+        }
+
+        if (sourceTitle.Contains("Spotify", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(session.Artist))
+        {
+            return $"{session.Title} - {session.Artist}";
         }
 
         return string.IsNullOrWhiteSpace(session.Artist)
@@ -1728,6 +1770,11 @@ internal sealed class WindowShelver
                 return ShelfBadgeKind.DoneNeedsReview;
             }
 
+            if (eventName.Contains("agentturncomplete", StringComparison.Ordinal))
+            {
+                return ShelfBadgeKind.DoneNeedsReview;
+            }
+
             if (eventName.Contains("pretooluse", StringComparison.Ordinal))
             {
                 if (IsFileEditingTool(tool, text))
@@ -1923,6 +1970,13 @@ internal sealed class WindowShelver
         }
 
         return GetBadgePriority(next) >= GetBadgePriority(current);
+    }
+
+    private static bool ShouldRevealShelfForAgentCompletion(AgentCardUpdate update)
+    {
+        return update.Badge.Notify &&
+               update.Badge.Kind is ShelfBadgeKind.Done or ShelfBadgeKind.DoneNeedsReview or ShelfBadgeKind.Failed &&
+               update.Session.Source.Contains("codex", StringComparison.OrdinalIgnoreCase);
     }
 
     private static int GetBadgePriority(ShelfBadgeKind badgeKind)
@@ -2413,13 +2467,6 @@ internal sealed class WindowShelver
 
     private static void PrepareSourceForInput(ShelvedWindow item, IntPtr target)
     {
-        if (!SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy))
-        {
-            Trace.WriteLine(
-                $"LiveShelf ForceSetForegroundWindow input hwnd=0x{item.SourceHwnd.ToInt64():X} card={item.Id}");
-            NativeMethods.ForceSetForegroundWindow(item.SourceHwnd);
-        }
-
         NativeMethods.SetFocus(target == IntPtr.Zero ? item.SourceHwnd : target);
     }
 
@@ -2455,22 +2502,25 @@ internal sealed class WindowShelver
             return false;
         }
 
-        var sourceRatio = sourceSize.Width / (double)sourceSize.Height;
-        var previewRatio = previewWidth / previewHeight;
         double fittedLeft = 0;
         double fittedTop = 0;
         double fittedWidth = previewWidth;
         double fittedHeight = previewHeight;
 
-        if (sourceRatio > previewRatio)
+        if (!item.IsZoomed && !item.IsInteractive)
         {
-            fittedHeight = previewWidth / sourceRatio;
-            fittedTop = (previewHeight - fittedHeight) / 2;
-        }
-        else
-        {
-            fittedWidth = previewHeight * sourceRatio;
-            fittedLeft = (previewWidth - fittedWidth) / 2;
+            var sourceRatio = sourceSize.Width / (double)sourceSize.Height;
+            var previewRatio = previewWidth / previewHeight;
+            if (sourceRatio > previewRatio)
+            {
+                fittedHeight = previewWidth / sourceRatio;
+                fittedTop = (previewHeight - fittedHeight) / 2;
+            }
+            else
+            {
+                fittedWidth = previewHeight * sourceRatio;
+                fittedLeft = (previewWidth - fittedWidth) / 2;
+            }
         }
 
         if (x < fittedLeft || x > fittedLeft + fittedWidth || y < fittedTop || y > fittedTop + fittedHeight)
