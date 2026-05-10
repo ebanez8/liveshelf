@@ -9,7 +9,6 @@ namespace LiveShelf;
 
 internal sealed class WindowShelver
 {
-    private static readonly TimeSpan InitialFocusSuppression = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ContentProbeInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan AgentStableDoneDelay = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan StableDoneDelay = TimeSpan.FromSeconds(9);
@@ -112,7 +111,6 @@ internal sealed class WindowShelver
             processId,
             currentRect,
             sourcePolicy);
-        item.SuppressFocusAlertsUntilUtc = DateTime.UtcNow.Add(InitialFocusSuppression);
         item.ExePath = NativeMethods.GetProcessExePath(processId);
         var initialText = WindowContentProbe.TryCapture(sourceHwnd)?.Text ?? string.Empty;
         item.IsAgentLikeSession = LooksLikeAgentSession(processName, title, initialText);
@@ -768,25 +766,6 @@ internal sealed class WindowShelver
 
             item.IsSourceAlive = true;
             ObserveLivePreviewSourceWindow(item, virtualScreen);
-
-            if (!item.IsInteractive &&
-                !SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy) &&
-                !item.HasLinkedAgentSession &&
-                foregroundWindow == item.SourceHwnd &&
-                _lastForegroundWindow != item.SourceHwnd &&
-                now >= item.SuppressFocusAlertsUntilUtc)
-            {
-                SetBadgeAndAlert(item, ShelfBadgeKind.NeedsAttention);
-            }
-
-            if (!item.IsInteractive &&
-                !SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy) &&
-                !item.HasLinkedAgentSession &&
-                NativeMethods.GetWindowRect(item.SourceHwnd, out var sourceRect) &&
-                IsMeaningfullyVisible(sourceRect, virtualScreen))
-            {
-                SetBadgeAndAlert(item, ShelfBadgeKind.NeedsAttention);
-            }
 
             var title = NativeMethods.GetWindowTitle(item.SourceHwnd);
             var nextTitle = string.IsNullOrWhiteSpace(title) ? item.ProcessName : title;

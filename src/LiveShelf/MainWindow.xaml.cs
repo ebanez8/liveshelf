@@ -216,6 +216,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return;
             }
 
+            if (_pendingInteractiveItem == item)
+            {
+                return;
+            }
+
             DeactivateZoom(item);
             RunAfter(ZoomAnimationMs, () =>
             {
