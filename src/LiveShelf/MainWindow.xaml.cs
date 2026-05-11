@@ -1535,75 +1535,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private bool UpdatePreviewFrame(ShelvedWindow item)
     {
-        if (!_previewHostElements.TryGetValue(item, out var host) ||
-            !_previewElements.TryGetValue(item, out var surface) ||
-            host.ActualWidth <= 0 ||
-            host.ActualHeight <= 0)
-        {
-            return false;
-        }
-
-        var frameSize = ComputePreviewFrameSize(
-            host.ActualWidth,
-            host.ActualHeight,
-            GetPreviewSourceSize(item));
-        if (frameSize.Width <= 0 || frameSize.Height <= 0)
+        if (!_previewElements.TryGetValue(item, out var surface))
         {
             return false;
         }
 
         var changed = false;
-        if (double.IsNaN(surface.Width) || Math.Abs(surface.Width - frameSize.Width) > 0.5)
+        if (!double.IsNaN(surface.Width))
         {
-            surface.Width = frameSize.Width;
+            surface.Width = double.NaN;
             changed = true;
         }
 
-        if (double.IsNaN(surface.Height) || Math.Abs(surface.Height - frameSize.Height) > 0.5)
+        if (!double.IsNaN(surface.Height))
         {
-            surface.Height = frameSize.Height;
+            surface.Height = double.NaN;
             changed = true;
         }
 
         return changed;
-    }
-
-    private static Size ComputePreviewFrameSize(
-        double hostWidth,
-        double hostHeight,
-        NativeMethods.SIZE sourceSize)
-    {
-        if (hostWidth <= 0 || hostHeight <= 0)
-        {
-            return Size.Empty;
-        }
-
-        if (!DwmThumbnailLayout.HasUsableSourceSize(sourceSize))
-        {
-            return new Size(hostWidth, hostHeight);
-        }
-
-        var sourceRatio = sourceSize.Width / (double)sourceSize.Height;
-        var hostRatio = hostWidth / hostHeight;
-        return sourceRatio > hostRatio
-            ? new Size(hostWidth, Math.Max(1, hostWidth / sourceRatio))
-            : new Size(Math.Max(1, hostHeight * sourceRatio), hostHeight);
-    }
-
-    private static NativeMethods.SIZE GetPreviewSourceSize(ShelvedWindow item)
-    {
-        if (DwmThumbnailLayout.HasUsableSourceSize(item.LastThumbnailSourceSize))
-        {
-            return item.LastThumbnailSourceSize;
-        }
-
-        return item.OriginalSourceRect.Width > 0 && item.OriginalSourceRect.Height > 0
-            ? new NativeMethods.SIZE
-            {
-                Width = item.OriginalSourceRect.Width,
-                Height = item.OriginalSourceRect.Height
-            }
-            : default;
     }
 
     private bool TryGetPreviewBounds(

@@ -277,8 +277,6 @@ internal sealed class WindowShelver
         var hasSourceSize = queryResult >= 0 && DwmThumbnailLayout.HasUsableSourceSize(sourceSize);
         if (hasSourceSize)
         {
-            var layoutSourceSize = GetStableThumbnailLayoutSize(item, sourceSize);
-            destination = DwmThumbnailLayout.ComputeContainDestination(destination, layoutSourceSize);
             ObserveThumbnailSourceSize(item, sourceSize);
         }
         else
@@ -360,29 +358,6 @@ internal sealed class WindowShelver
         }
 
         return !item.IsMediaCard;
-    }
-
-    private static NativeMethods.SIZE GetStableThumbnailLayoutSize(
-        ShelvedWindow item,
-        NativeMethods.SIZE queriedSize)
-    {
-        if (!DwmThumbnailLayout.IsSeverelyWrongSourceSize(queriedSize, item.OriginalSourceRect))
-        {
-            return queriedSize;
-        }
-
-        if (DwmThumbnailLayout.HasUsableSourceSize(item.LastThumbnailSourceSize))
-        {
-            return item.LastThumbnailSourceSize;
-        }
-
-        return item.OriginalSourceRect.Width > 0 && item.OriginalSourceRect.Height > 0
-            ? new NativeMethods.SIZE
-            {
-                Width = item.OriginalSourceRect.Width,
-                Height = item.OriginalSourceRect.Height
-            }
-            : queriedSize;
     }
 
     private static NativeMethods.RECT ParkSourceWindow(

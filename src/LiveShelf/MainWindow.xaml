@@ -440,8 +440,8 @@
                                               Visibility="{Binding PreviewVisibility}">
                                             <Border x:Name="PreviewSurface"
                                                     Tag="{Binding}"
-                                                    HorizontalAlignment="Center"
-                                                    VerticalAlignment="Center"
+                                                    HorizontalAlignment="Stretch"
+                                                    VerticalAlignment="Stretch"
                                                     MinWidth="1"
                                                     MinHeight="1"
                                                     Background="Transparent"
