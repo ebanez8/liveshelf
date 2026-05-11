@@ -40,6 +40,11 @@ internal sealed class AgentSessionRegistry
             : agentEvent.SessionId;
         if (!HasReliableSessionId(agentEvent, sessionId))
         {
+            if (TryApplySessionlessLifecycle(source, agentEvent))
+            {
+                return;
+            }
+
             Trace.WriteLine(
                 $"LiveShelf agent event ignored source={source} sessionId={sessionId} reason=unreliable-session-id cwd={agentEvent.Cwd}");
             return;
@@ -77,6 +82,60 @@ internal sealed class AgentSessionRegistry
         }
 
         TryAutoLinkSession(session);
+    }
+
+    private bool TryApplySessionlessLifecycle(string source, AgentEvent agentEvent)
+    {
+        var eventName = NormalizeEventName(agentEvent.EffectiveEventName);
+        var nextStatus = eventName switch
+        {
+            "agentturncomplete" or "turncomplete" or "taskcompleted" or "stop" => AgentSessionStatus.Done,
+            "approvalrequest" or "agentapprovalrequest" => AgentSessionStatus.Waiting,
+            "stopfailure" => AgentSessionStatus.Failed,
+            _ => (AgentSessionStatus?)null
+        };
+
+        if (nextStatus is null)
+        {
+            return false;
+        }
+
+        var session = _sessionsByKey.Values
+            .Where(candidate => string.Equals(candidate.Source, source, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(candidate => candidate.LastEventAtUtc)
+            .FirstOrDefault();
+
+        if (session is null)
+        {
+            return false;
+        }
+
+        var now = agentEvent.Timestamp > 0 ? agentEvent.TimestampUtc : DateTime.UtcNow;
+        session.Status = nextStatus.Value;
+        session.LastEventAtUtc = now;
+        if (nextStatus.Value is AgentSessionStatus.Done or AgentSessionStatus.Failed)
+        {
+            session.LastStopAtUtc = now;
+        }
+
+        if (string.IsNullOrWhiteSpace(session.LinkedCardId))
+        {
+            return true;
+        }
+
+        var linkedCard = _getCards().FirstOrDefault(card =>
+            card.Id == session.LinkedCardId &&
+            string.Equals(card.LinkedAgentKey, session.Key, StringComparison.OrdinalIgnoreCase));
+        if (linkedCard is not null)
+        {
+            ApplyLinkedCard(session, linkedCard);
+        }
+        else
+        {
+            session.LinkedCardId = string.Empty;
+        }
+
+        return true;
     }
 
     public void TryAutoLinkCard(ShelvedWindow card)
@@ -291,8 +350,15 @@ internal sealed class AgentSessionRegistry
 
             case "stop":
             case "taskcompleted":
+            case "agentturncomplete":
+            case "turncomplete":
                 session.Status = AgentSessionStatus.Done;
                 session.LastStopAtUtc = session.LastEventAtUtc;
+                break;
+
+            case "approvalrequest":
+            case "agentapprovalrequest":
+                session.Status = AgentSessionStatus.Waiting;
                 break;
 
             case "stopfailure":

@@ -571,6 +571,15 @@ internal static class AgentHookInstaller
     {
         try
         {
+            // Snapshot the error log size before the test so we can detect new errors
+            // even when the bridge exits with code 0 (which it always does by design).
+            var errorLogPath = Path.Combine(
+                Path.GetDirectoryName(bridgePath) ?? string.Empty,
+                "bridge-errors.log");
+            var errorLogSizeBefore = File.Exists(errorLogPath)
+                ? new FileInfo(errorLogPath).Length
+                : 0L;
+
             var startInfo = new ProcessStartInfo
             {
                 FileName = bridgePath,
@@ -611,9 +620,36 @@ internal static class AgentHookInstaller
                 return new AgentHookInstallResult(false, $"{FormatSourceName(source)} bridge test timed out");
             }
 
-            return process.ExitCode == 0
-                ? new AgentHookInstallResult(true, $"{FormatSourceName(source)} bridge test passed")
-                : new AgentHookInstallResult(false, $"{FormatSourceName(source)} bridge exited with code {process.ExitCode}");
+            if (process.ExitCode != 0)
+            {
+                return new AgentHookInstallResult(false, $"{FormatSourceName(source)} bridge exited with code {process.ExitCode}");
+            }
+
+            // Check whether the bridge logged new errors during this test.
+            // The bridge swallows exceptions and always exits 0, so this is the
+            // only reliable way to detect runtime failures like JSON serialization crashes.
+            var errorLogSizeAfter = File.Exists(errorLogPath)
+                ? new FileInfo(errorLogPath).Length
+                : 0L;
+            if (errorLogSizeAfter > errorLogSizeBefore)
+            {
+                var stderr = string.Empty;
+                try
+                {
+                    stderr = process.StandardError.ReadToEnd().Trim();
+                }
+                catch
+                {
+                }
+
+                var detail = !string.IsNullOrEmpty(stderr)
+                    ? stderr
+                    : "check bridge-errors.log for details";
+                return new AgentHookInstallResult(false,
+                    $"{FormatSourceName(source)} bridge exited 0 but logged errors ({detail})");
+            }
+
+            return new AgentHookInstallResult(true, $"{FormatSourceName(source)} bridge test passed");
         }
         catch (Exception ex)
         {
