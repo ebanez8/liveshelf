@@ -552,6 +552,7 @@ internal sealed class WindowShelver
             ObserveWindowContent(item, now);
         }
 
+        _agentSessions.SweepStaleSessions();
         _lastForegroundWindow = foregroundWindow;
     }
 

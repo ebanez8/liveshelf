@@ -84,6 +84,30 @@ internal sealed class AgentSessionRegistry
         TryAutoLinkSession(session);
     }
 
+    /// <summary>
+    /// Periodically called by the monitor timer to detect sessions that have gone
+    /// stale (e.g. agent was rate-limited or crashed without sending Stop/StopFailure).
+    /// Re-evaluates linked cards so the badge transitions from "Working" to "Stalled".
+    /// </summary>
+    public void SweepStaleSessions()
+    {
+        foreach (var session in _sessionsByKey.Values)
+        {
+            if (!IsSessionStale(session) || string.IsNullOrWhiteSpace(session.LinkedCardId))
+            {
+                continue;
+            }
+
+            var linkedCard = _getCards().FirstOrDefault(card =>
+                card.Id == session.LinkedCardId &&
+                string.Equals(card.LinkedAgentKey, session.Key, StringComparison.OrdinalIgnoreCase));
+            if (linkedCard is not null)
+            {
+                ApplyLinkedCard(session, linkedCard);
+            }
+        }
+    }
+
     private bool TryApplySessionlessLifecycle(string source, AgentEvent agentEvent)
     {
         var eventName = NormalizeEventName(agentEvent.EffectiveEventName);
@@ -256,6 +280,16 @@ internal sealed class AgentSessionRegistry
 
     private static AgentBadge ComputeAgentBadge(AgentSession session)
     {
+        // Detect sessions stuck in active states without receiving events.
+        // This handles rate-limit and crash scenarios where the agent dies
+        // without sending a Stop or StopFailure event.
+        if (IsSessionStale(session))
+        {
+            session.Status = AgentSessionStatus.Failed;
+            session.LastStopAtUtc = session.LastEventAtUtc;
+            return new AgentBadge(ShelfBadgeKind.Failed, "Stalled", "No response from agent", true);
+        }
+
         return session.Status switch
         {
             AgentSessionStatus.Failed => new AgentBadge(ShelfBadgeKind.Failed, "Failed", BuildFailureDetail(session), true),
@@ -266,6 +300,20 @@ internal sealed class AgentSessionRegistry
             AgentSessionStatus.Idle => new AgentBadge(ShelfBadgeKind.Running, "Idle", string.Empty, false),
             _ => new AgentBadge(ShelfBadgeKind.Running, "Working", string.Empty, false)
         };
+    }
+
+    private static bool IsSessionStale(AgentSession session)
+    {
+        // Only active (in-progress) states can become stale.
+        if (session.Status is not (AgentSessionStatus.Working or
+            AgentSessionStatus.Editing or
+            AgentSessionStatus.RunningCommand))
+        {
+            return false;
+        }
+
+        var timeSinceLastEvent = DateTime.UtcNow - session.LastEventAtUtc;
+        return timeSinceLastEvent > TimeSpan.FromMinutes(5);
     }
 
     private static AgentBadge BuildDoneBadge(AgentSession session)
