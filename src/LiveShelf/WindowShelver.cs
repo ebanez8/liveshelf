@@ -280,11 +280,7 @@ internal sealed class WindowShelver
         var hasSourceSize = queryResult >= 0 && DwmThumbnailLayout.HasUsableSourceSize(sourceSize);
         if (hasSourceSize)
         {
-            if (!item.IsZoomed && !item.IsInteractive)
-            {
-                destination = DwmThumbnailLayout.ComputeContainDestination(destination, sourceSize);
-            }
-
+            destination = DwmThumbnailLayout.ComputeContainDestination(destination, sourceSize);
             ObserveThumbnailSourceSize(item, sourceSize);
         }
         else
@@ -629,19 +625,20 @@ internal sealed class WindowShelver
             return;
         }
 
+        Trace.WriteLine(
+            $"LiveShelf parked normal interactive hwnd=0x{item.SourceHwnd.ToInt64():X} card={item.Id}");
         var parkedBounds = item.ParkedBounds.Width > 0 && item.ParkedBounds.Height > 0
             ? item.ParkedBounds
             : GetParkedSourceRect(item.OriginalPlacement.NormalPosition);
+        var sourceBounds = GetInteractiveSourceBounds(item, parkedBounds);
 
-        Trace.WriteLine(
-            $"LiveShelf parked normal interactive hwnd=0x{item.SourceHwnd.ToInt64():X} card={item.Id}");
         NativeMethods.SetWindowPos(
             item.SourceHwnd,
             NativeMethods.HWND_BOTTOM,
             parkedBounds.Left,
             parkedBounds.Top,
-            screenBounds.Width,
-            screenBounds.Height,
+            sourceBounds.Width,
+            sourceBounds.Height,
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER | NativeMethods.SWP_SHOWWINDOW);
     }
 
@@ -665,6 +662,7 @@ internal sealed class WindowShelver
         var parkedBounds = item.ParkedBounds.Width > 0 && item.ParkedBounds.Height > 0
             ? item.ParkedBounds
             : GetParkedSourceRect(item.OriginalPlacement.NormalPosition);
+        var sourceBounds = GetInteractiveSourceBounds(item, parkedBounds);
 
         item.InteractiveBounds = screenBounds;
         NativeMethods.ShowWindow(
@@ -675,9 +673,21 @@ internal sealed class WindowShelver
             NativeMethods.HWND_BOTTOM,
             parkedBounds.Left,
             parkedBounds.Top,
-            screenBounds.Width,
-            screenBounds.Height,
+            sourceBounds.Width,
+            sourceBounds.Height,
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER | NativeMethods.SWP_SHOWWINDOW);
+    }
+
+    private static NativeMethods.RECT GetInteractiveSourceBounds(
+        ShelvedWindow item,
+        NativeMethods.RECT fallbackBounds)
+    {
+        if (item.OriginalSourceRect.Width > 0 && item.OriginalSourceRect.Height > 0)
+        {
+            return item.OriginalSourceRect;
+        }
+
+        return fallbackBounds;
     }
 
     private static void ParkInteractiveSource(ShelvedWindow item)
@@ -966,6 +976,11 @@ internal sealed class WindowShelver
     {
         _dispatcher.InvokeAsync(() =>
         {
+            if (!string.Equals(update.Card.LinkedAgentKey, update.Session.Key, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
             update.Card.AgentDisplayTitle = FormatAgentDisplayTitle(update.Session.Source);
             update.Card.SetHookedAgentStatus(update.Badge.Kind, update.Badge.Label, update.Badge.Detail);
             if (update.Badge.Notify)
@@ -2467,7 +2482,47 @@ internal sealed class WindowShelver
 
     private static void PrepareSourceForInput(ShelvedWindow item, IntPtr target)
     {
-        NativeMethods.SetFocus(target == IntPtr.Zero ? item.SourceHwnd : target);
+        var focusTarget = target == IntPtr.Zero ? item.SourceHwnd : target;
+        if (!NativeMethods.IsWindow(focusTarget))
+        {
+            focusTarget = item.SourceHwnd;
+        }
+
+        AttachAndFocusWindow(item.SourceHwnd);
+        if (focusTarget != item.SourceHwnd)
+        {
+            AttachAndFocusWindow(focusTarget);
+        }
+
+        NativeMethods.PostMessageW(item.SourceHwnd, NativeMethods.WM_SETFOCUS, IntPtr.Zero, IntPtr.Zero);
+        NativeMethods.PostMessageW(focusTarget, NativeMethods.WM_SETFOCUS, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    private static void AttachAndFocusWindow(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || !NativeMethods.IsWindow(hwnd))
+        {
+            return;
+        }
+
+        var currentThread = NativeMethods.GetCurrentThreadId();
+        var targetThread = NativeMethods.GetWindowThreadProcessId(hwnd, out _);
+        var attached = targetThread != 0 &&
+                       targetThread != currentThread &&
+                       NativeMethods.AttachThreadInput(currentThread, targetThread, true);
+
+        try
+        {
+            NativeMethods.SetActiveWindow(hwnd);
+            NativeMethods.SetFocus(hwnd);
+        }
+        finally
+        {
+            if (attached)
+            {
+                NativeMethods.AttachThreadInput(currentThread, targetThread, false);
+            }
+        }
     }
 
     private static bool TryMapPreviewPointToSourceClient(
@@ -2502,25 +2557,21 @@ internal sealed class WindowShelver
             return false;
         }
 
+        var sourceRatio = sourceSize.Width / (double)sourceSize.Height;
+        var previewRatio = previewWidth / previewHeight;
         double fittedLeft = 0;
         double fittedTop = 0;
-        double fittedWidth = previewWidth;
-        double fittedHeight = previewHeight;
-
-        if (!item.IsZoomed && !item.IsInteractive)
+        var fittedWidth = previewWidth;
+        var fittedHeight = previewHeight;
+        if (sourceRatio > previewRatio)
         {
-            var sourceRatio = sourceSize.Width / (double)sourceSize.Height;
-            var previewRatio = previewWidth / previewHeight;
-            if (sourceRatio > previewRatio)
-            {
-                fittedHeight = previewWidth / sourceRatio;
-                fittedTop = (previewHeight - fittedHeight) / 2;
-            }
-            else
-            {
-                fittedWidth = previewHeight * sourceRatio;
-                fittedLeft = (previewWidth - fittedWidth) / 2;
-            }
+            fittedHeight = previewWidth / sourceRatio;
+            fittedTop = (previewHeight - fittedHeight) / 2;
+        }
+        else
+        {
+            fittedWidth = previewHeight * sourceRatio;
+            fittedLeft = (previewWidth - fittedWidth) / 2;
         }
 
         if (x < fittedLeft || x > fittedLeft + fittedWidth || y < fittedTop || y > fittedTop + fittedHeight)

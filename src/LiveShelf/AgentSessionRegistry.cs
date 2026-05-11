@@ -6,8 +6,10 @@ namespace LiveShelf;
 
 internal sealed class AgentSessionRegistry
 {
-    private const int AutoLinkThreshold = 85;
-    private const int AmbiguousThreshold = 60;
+    private const int AutoLinkScore = 80;
+    private const int ProcessMatchScore = 100;
+    private const int CwdMatchScore = 80;
+    private const int SourceMatchScore = 20;
     private const int ClearWinnerMargin = 20;
 
     private readonly Func<IReadOnlyList<ShelvedWindow>> _getCards;
@@ -34,6 +36,11 @@ internal sealed class AgentSessionRegistry
         var sessionId = string.IsNullOrWhiteSpace(agentEvent.SessionId)
             ? agentEvent.EffectiveSessionId
             : agentEvent.SessionId;
+        if (!HasReliableSessionId(agentEvent, sessionId))
+        {
+            return;
+        }
+
         var key = AgentSession.BuildKey(source, sessionId);
         if (!_sessionsByKey.TryGetValue(key, out var session))
         {
@@ -46,7 +53,8 @@ internal sealed class AgentSessionRegistry
         if (!string.IsNullOrWhiteSpace(session.LinkedCardId))
         {
             var linkedCard = _getCards().FirstOrDefault(card =>
-                card.Id == session.LinkedCardId || card.LinkedAgentKey == session.Key);
+                card.Id == session.LinkedCardId &&
+                string.Equals(card.LinkedAgentKey, session.Key, StringComparison.OrdinalIgnoreCase));
             if (linkedCard is not null)
             {
                 ApplyLinkedCard(session, linkedCard);
@@ -54,6 +62,14 @@ internal sealed class AgentSessionRegistry
             }
 
             session.LinkedCardId = string.Empty;
+        }
+
+        var exactCard = _getCards().FirstOrDefault(card =>
+            string.Equals(card.LinkedAgentKey, session.Key, StringComparison.OrdinalIgnoreCase));
+        if (exactCard is not null)
+        {
+            LinkSessionToCard(session, exactCard);
+            return;
         }
 
         TryAutoLinkSession(session);
@@ -74,16 +90,9 @@ internal sealed class AgentSessionRegistry
             .OrderByDescending(candidate => candidate.Score)
             .ToList();
 
-        var best = candidates.FirstOrDefault();
-        if (best is null || best.Score < AutoLinkThreshold)
+        if (TryChooseAutoLink(candidates, out var sessionToLink))
         {
-            return;
-        }
-
-        var second = candidates.Skip(1).FirstOrDefault();
-        if (second is null || best.Score - second.Score >= ClearWinnerMargin)
-        {
-            LinkSessionToCard(best.Session, card);
+            LinkSessionToCard(sessionToLink, card);
         }
     }
 
@@ -127,33 +136,32 @@ internal sealed class AgentSessionRegistry
             .OrderByDescending(candidate => candidate.Score)
             .ToList();
 
-        var best = candidates.FirstOrDefault();
-        if (best is null)
+        if (TryChooseAutoLink(candidates, out var cardToLink))
         {
+            LinkSessionToCard(session, cardToLink);
             return;
         }
 
-        var second = candidates.Skip(1).FirstOrDefault();
-        if (best.Score >= AutoLinkThreshold &&
-            (second is null || best.Score - second.Score >= ClearWinnerMargin))
-        {
-            LinkSessionToCard(session, best.Card);
-            return;
-        }
-
-        if (best.Score >= AmbiguousThreshold)
+        if (candidates.Count > 0)
         {
             if (_ambiguousPromptedKeys.Add(session.Key))
             {
                 AmbiguousLinkDetected?.Invoke(
                     this,
-                    new AgentLinkAmbiguousEventArgs(session, candidates.Take(2).ToArray()));
+                    new AgentLinkAmbiguousEventArgs(
+                        session,
+                        candidates.Take(2).ToArray()));
             }
         }
     }
 
     private void ApplyLinkedCard(AgentSession session, ShelvedWindow card)
     {
+        if (!string.Equals(card.LinkedAgentKey, session.Key, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
         var badge = ComputeAgentBadge(session);
         var badgeKey = $"{session.Status}:{badge.Label}:{badge.Detail}:{CountChangedFiles(session)}";
         if (string.Equals(session.LastAppliedBadgeKey, badgeKey, StringComparison.Ordinal))
@@ -207,6 +215,7 @@ internal sealed class AgentSessionRegistry
         session.LastEventAtUtc = agentEvent.Timestamp > 0 ? agentEvent.TimestampUtc : DateTime.UtcNow;
         session.Cwd = FirstNonEmpty(agentEvent.Cwd, session.Cwd);
         session.TranscriptPath = FirstNonEmpty(agentEvent.TranscriptPath, session.TranscriptPath);
+        AddRelatedProcessIds(session, agentEvent);
 
         var eventName = NormalizeEventName(agentEvent.EffectiveEventName);
         switch (eventName)
@@ -395,49 +404,131 @@ internal sealed class AgentSessionRegistry
         }
     }
 
+    private static void AddRelatedProcessIds(AgentSession session, AgentEvent agentEvent)
+    {
+        AddRelatedProcessId(session, agentEvent.ProcessId);
+        foreach (var processId in agentEvent.ParentProcessIds)
+        {
+            AddRelatedProcessId(session, processId);
+        }
+
+        if (agentEvent.ForegroundProcessId == agentEvent.ProcessId ||
+            agentEvent.ParentProcessIds.Contains(agentEvent.ForegroundProcessId))
+        {
+            AddRelatedProcessId(session, agentEvent.ForegroundProcessId);
+        }
+    }
+
+    private static void AddRelatedProcessId(AgentSession session, int processId)
+    {
+        if (processId > 0)
+        {
+            session.RelatedProcessIds.Add(processId);
+        }
+    }
+
+    private static bool CardMatchesSessionProcess(ShelvedWindow card, AgentSession session) =>
+        card.SourceProcessId > 0 && session.RelatedProcessIds.Contains(card.SourceProcessId);
+
     private static int ScoreAgentCardMatch(ShelvedWindow card, AgentSession session)
     {
         var score = 0;
-
-        if (string.Equals(card.LinkedAgentKey, session.Key, StringComparison.OrdinalIgnoreCase))
+        if (CardMatchesSessionProcess(card, session))
         {
-            score += 100;
+            score += ProcessMatchScore;
         }
 
         if (!string.IsNullOrWhiteSpace(card.PossibleCwd) &&
             !string.IsNullOrWhiteSpace(session.Cwd) &&
             SamePath(card.PossibleCwd, session.Cwd))
         {
-            score += 60;
+            score += CwdMatchScore;
         }
 
-        if (!string.IsNullOrWhiteSpace(session.Cwd) &&
-            TitleContainsFolderName(card.Title, session.Cwd))
+        if (CardMatchesSessionSource(card, session.Source))
         {
-            score += 25;
-        }
-
-        if (ProcessInfoSuggestsAgent(card, session.Source))
-        {
-            score += 45;
-        }
-
-        if (Math.Abs((card.ShelvedAtUtc - session.LastEventAtUtc).TotalMilliseconds) < 15000)
-        {
-            score += 15;
-        }
-
-        if (IsTerminalProcess(card.ProcessName))
-        {
-            score += 15;
-        }
-
-        if (string.Equals(card.SuspectedAgent, session.Source, StringComparison.OrdinalIgnoreCase))
-        {
-            score += 30;
+            score += SourceMatchScore;
         }
 
         return score;
+    }
+
+    private static bool CardMatchesSessionSource(ShelvedWindow card, string source)
+    {
+        var cardSource = FirstNonEmpty(card.SuspectedAgent, InferSourceFromCard(card));
+        return !string.IsNullOrWhiteSpace(cardSource) &&
+               string.Equals(cardSource, source, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string InferSourceFromCard(ShelvedWindow card)
+    {
+        var text = $"{card.ProcessName} {card.ExePath} {card.Title}";
+        if (text.Contains("codex", StringComparison.OrdinalIgnoreCase))
+        {
+            return "codex";
+        }
+
+        return text.Contains("claude", StringComparison.OrdinalIgnoreCase) ? "claude" : string.Empty;
+    }
+
+    private static bool TryChooseAutoLink(
+        IReadOnlyList<AgentCardCandidate> candidates,
+        out ShelvedWindow card)
+    {
+        card = null!;
+        var best = candidates.FirstOrDefault();
+        if (best is null || best.Score < AutoLinkScore)
+        {
+            return false;
+        }
+
+        var second = candidates.Skip(1).FirstOrDefault();
+        if (second is not null && best.Score - second.Score < ClearWinnerMargin)
+        {
+            return false;
+        }
+
+        card = best.Card;
+        return true;
+    }
+
+    private static bool TryChooseAutoLink(
+        IReadOnlyList<AgentSessionCandidate> candidates,
+        out AgentSession session)
+    {
+        session = null!;
+        var best = candidates.FirstOrDefault();
+        if (best is null || best.Score < AutoLinkScore)
+        {
+            return false;
+        }
+
+        var second = candidates.Skip(1).FirstOrDefault();
+        if (second is not null && best.Score - second.Score < ClearWinnerMargin)
+        {
+            return false;
+        }
+
+        session = best.Session;
+        return true;
+    }
+
+    private static bool HasReliableSessionId(AgentEvent agentEvent, string sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId) ||
+            sessionId.Equals("unknown", StringComparison.OrdinalIgnoreCase) ||
+            sessionId.EndsWith(":unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(agentEvent.Cwd) &&
+            SamePath(sessionId, agentEvent.Cwd))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private static bool IsPathProperty(string normalizedName)
@@ -487,36 +578,6 @@ internal sealed class AgentSessionRegistry
         }
 
         return string.Equals(first, second, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool TitleContainsFolderName(string title, string cwd)
-    {
-        var folderName = Path.GetFileName(cwd.TrimEnd('\\', '/'));
-        return !string.IsNullOrWhiteSpace(folderName) &&
-               title.Contains(folderName, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool ProcessInfoSuggestsAgent(ShelvedWindow card, string source)
-    {
-        var text = $"{card.ProcessName} {card.ExePath} {card.Title} {card.SuspectedAgent}";
-        return source.Contains("codex", StringComparison.OrdinalIgnoreCase)
-            ? text.Contains("codex", StringComparison.OrdinalIgnoreCase)
-            : text.Contains("claude", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsTerminalProcess(string processName)
-    {
-        return processName.Contains("windowsterminal", StringComparison.OrdinalIgnoreCase) ||
-               processName.Equals("wt", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("conhost", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("cmd", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("powershell", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("pwsh", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("wezterm", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("alacritty", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("tabby", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("hyper", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("ghostty", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeSource(string source)

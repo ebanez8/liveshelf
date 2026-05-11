@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.IO;
 using System.Text.Json.Nodes;
 using LiveShelf;
 
@@ -149,6 +150,83 @@ AssertTrue(
     "tiny top-left source size should be treated as a broken live preview",
     DwmThumbnailLayout.IsSeverelyWrongSourceSize(tinySource, originalBrowserRect));
 
+var sourceOnlyCard = CreateShelvedCard(
+    "stack - Codex",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 1101,
+    possibleCwd: @"C:\Users\Evan Z\Desktop\Coding\stack");
+var sourceOnlyRegistry = new AgentSessionRegistry(() => [sourceOnlyCard]);
+var sourceOnlyUpdates = new List<AgentCardUpdate>();
+var sourceOnlyPrompts = new List<AgentLinkAmbiguousEventArgs>();
+sourceOnlyRegistry.CardUpdateRequested += (_, update) => sourceOnlyUpdates.Add(update);
+sourceOnlyRegistry.AmbiguousLinkDetected += (_, prompt) => sourceOnlyPrompts.Add(prompt);
+sourceOnlyRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "session-source-only",
+    EventName = "UserPromptSubmit"
+});
+AssertEqual(
+    "source-only Codex evidence should not auto-update a card",
+    0,
+    sourceOnlyUpdates.Count);
+AssertEqual(
+    "source-only Codex evidence should ask for a one-time link",
+    1,
+    sourceOnlyPrompts.Count);
+sourceOnlyRegistry.LinkSessionToCard(sourceOnlyPrompts[0].Session, sourceOnlyCard);
+sourceOnlyRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "session-source-only",
+    EventName = "PreToolUse",
+    ToolName = "shell_command"
+});
+AssertEqual(
+    "user-selected Codex session link should keep receiving updates without process ancestry",
+    2,
+    sourceOnlyUpdates.Count);
+
+sourceOnlyRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "different-session",
+    EventName = "PreToolUse",
+    ToolName = "shell_command"
+});
+AssertEqual(
+    "different Codex session must not update an already-linked card",
+    2,
+    sourceOnlyUpdates.Count);
+
+var cwdMatchCard = CreateShelvedCard(
+    "stack - Codex",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 2201,
+    possibleCwd: @"C:\Users\Evan Z\Desktop\Coding\stack");
+var otherCodexCard = CreateShelvedCard(
+    "other - Codex",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 2202,
+    possibleCwd: @"C:\Users\Evan Z\Desktop\Coding\other");
+var cwdRegistry = new AgentSessionRegistry(() => [cwdMatchCard, otherCodexCard]);
+var cwdUpdates = new List<AgentCardUpdate>();
+cwdRegistry.CardUpdateRequested += (_, update) => cwdUpdates.Add(update);
+cwdRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "session-cwd",
+    EventName = "UserPromptSubmit",
+    Cwd = @"C:\Users\Evan Z\Desktop\Coding\stack"
+});
+AssertEqual(
+    "unique cwd Codex match should auto-link the matching shelved card",
+    cwdMatchCard.Id,
+    cwdUpdates.Single().Card.Id);
+
 var installerType = typeof(AgentHookInstaller);
 var ensureCodexHooksFeature = installerType.GetMethod(
     "EnsureCodexHooksFeature",
@@ -195,6 +273,19 @@ AssertTrue(
 AssertTrue(
     "codex installer should enable TUI notifications for notify fallback",
     notifyCodexConfig.Contains("notification_condition = \"always\"", StringComparison.Ordinal));
+
+var isCodexTrackingInstalled = installerType.GetMethod(
+    "IsCodexTrackingInstalled",
+    BindingFlags.NonPublic | BindingFlags.Static);
+var installedHooksPath = Path.Combine(AppContext.BaseDirectory, $"codex-hooks-{Guid.NewGuid():N}.json");
+File.WriteAllText(
+    installedHooksPath,
+    """
+    {"hooks":{"Stop":[{"hooks":[{"command":"liveshelf-bridge.exe --source codex"}]}]}}
+    """);
+AssertTrue(
+    "codex tracking status should detect an installed notify fallback",
+    isCodexTrackingInstalled?.Invoke(null, [notifyConfigPath, installedHooksPath]) is true);
 
 var buildCodexShimCommand = installerType.GetMethod(
     "BuildCodexShimCommand",
@@ -269,4 +360,28 @@ void AssertBetween(string name, TimeSpan actual, double minSeconds, double maxSe
     {
         failures.Add($"{name}: expected {minSeconds:0.0}-{maxSeconds:0.0}s, got {seconds:0.000}s");
     }
+}
+
+ShelvedWindow CreateShelvedCard(
+    string title,
+    string processName,
+    string suspectedAgent,
+    int sourceProcessId,
+    string possibleCwd)
+{
+    var placement = NativeMethods.WINDOWPLACEMENT.Create();
+    var rect = new NativeMethods.RECT(0, 0, 900, 600);
+    var card = new ShelvedWindow(
+        IntPtr.Zero,
+        IntPtr.Zero,
+        placement,
+        title,
+        processName,
+        sourceProcessId,
+        rect,
+        SourceWindowPolicy.Normal);
+    card.SuspectedAgent = suspectedAgent;
+    card.PossibleCwd = possibleCwd;
+    card.IsAgentLikeSession = true;
+    return card;
 }

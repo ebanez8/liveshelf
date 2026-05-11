@@ -349,11 +349,15 @@
                                         <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
 
-                                    <Grid Grid.Row="0" Margin="0,0,0,7" Visibility="{Binding HeaderVisibility}">
+                                    <Grid Grid.Row="0"
+                                          Height="32"
+                                          ClipToBounds="True"
+                                          Margin="0,0,0,5"
+                                          Visibility="{Binding HeaderVisibility}">
                                         <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto"/>
-                                            <RowDefinition Height="Auto"/>
-                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="16"/>
+                                            <RowDefinition Height="14"/>
+                                            <RowDefinition Height="0"/>
                                             <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
                                         <Grid.ColumnDefinitions>
@@ -375,7 +379,8 @@
                                                    Text="{Binding StatusText}"
                                                    Foreground="{StaticResource TextMuted}"
                                                    FontSize="10"
-                                                   Margin="0,3,0,0"
+                                                   Margin="0,2,0,0"
+                                                   VerticalAlignment="Center"
                                                    TextTrimming="CharacterEllipsis"
                                                    Visibility="{Binding HeaderStatusTextVisibility}"/>
 
@@ -385,7 +390,8 @@
                                                    Text="{Binding DetailText}"
                                                    Foreground="{StaticResource TextMuted}"
                                                    FontSize="10"
-                                                   Margin="0,2,0,0"
+                                                   Margin="0,1,0,0"
+                                                   VerticalAlignment="Center"
                                                    TextTrimming="CharacterEllipsis"
                                                    Visibility="{Binding HeaderDetailTextVisibility}"/>
 
@@ -426,9 +432,9 @@
                                     <Grid Grid.Row="1">
                                         <Border x:Name="PreviewSurface"
                                                 Tag="{Binding}"
-                                                Height="108"
+                                                Height="92"
                                                 Focusable="True"
-                                                Background="#4A090B0E"
+                                                Background="Transparent"
                                                 BorderBrush="#28FFFFFF"
                                                 BorderThickness="1"
                                                 CornerRadius="4"
@@ -446,6 +452,7 @@
                                                 KeyDown="PreviewSurface_KeyDown"
                                                 KeyUp="PreviewSurface_KeyUp"
                                                 TextInput="PreviewSurface_TextInput"
+                                                RequestBringIntoView="PreviewSurface_RequestBringIntoView"
                                                 Visibility="{Binding PreviewVisibility}"/>
 
                                         <Border Background="Transparent"

@@ -2,9 +2,10 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
 
@@ -22,6 +23,16 @@
              Link="DwmThumbnailLayout.cs" />
     <Compile Include="..\..\src\LiveShelf\AgentHookInstaller.cs"
              Link="AgentHookInstaller.cs" />
+    <Compile Include="..\..\src\LiveShelf\AgentBadge.cs"
+             Link="AgentBadge.cs" />
+    <Compile Include="..\..\src\LiveShelf\AgentEvent.cs"
+             Link="AgentEvent.cs" />
+    <Compile Include="..\..\src\LiveShelf\AgentSession.cs"
+             Link="AgentSession.cs" />
+    <Compile Include="..\..\src\LiveShelf\AgentSessionRegistry.cs"
+             Link="AgentSessionRegistry.cs" />
+    <Compile Include="..\..\src\LiveShelf\ShelvedWindow.cs"
+             Link="ShelvedWindow.cs" />
   </ItemGroup>
 
 </Project>

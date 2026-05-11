@@ -72,6 +72,19 @@ internal static class AgentHookInstaller
         return TestBridge(EnsureBridgeInstalled(), "claude");
     }
 
+    public static AgentTrackingInstallStatus GetInstalledTrackingStatus()
+    {
+        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var codexDirectory = Path.Combine(profile, ".codex");
+        var claudeDirectory = Path.Combine(profile, ".claude");
+
+        return new AgentTrackingInstallStatus(
+            IsCodexTrackingInstalled(
+                Path.Combine(codexDirectory, "config.toml"),
+                Path.Combine(codexDirectory, "hooks.json")),
+            IsHookConfigInstalled(Path.Combine(claudeDirectory, "settings.json"), "claude"));
+    }
+
     private static string EnsureBridgeInstalled()
     {
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -247,6 +260,48 @@ internal static class AgentHookInstaller
         var text = node?.ToJsonString();
         return text?.Contains(BridgeFileName, StringComparison.OrdinalIgnoreCase) == true ||
                text?.Contains(CodexShimFileName, StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static bool IsCodexTrackingInstalled(string configPath, string hooksPath)
+    {
+        var hasHooks = IsHookConfigInstalled(hooksPath, "codex");
+        if (!File.Exists(configPath))
+        {
+            return hasHooks;
+        }
+
+        var config = File.ReadAllText(configPath);
+        var hasHookFeature = Regex.IsMatch(
+            config,
+            @"(?im)^\s*hooks\s*=\s*true\s*(?:#.*)?$");
+        var hasNotify = config.Contains(BridgeFileName, StringComparison.OrdinalIgnoreCase) &&
+                        config.Contains("--source", StringComparison.OrdinalIgnoreCase) &&
+                        config.Contains("codex", StringComparison.OrdinalIgnoreCase);
+
+        return hasNotify || (hasHooks && hasHookFeature);
+    }
+
+    private static bool IsHookConfigInstalled(string path, string source)
+    {
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            var text = File.ReadAllText(path);
+            return text.Contains(BridgeFileName, StringComparison.OrdinalIgnoreCase) &&
+                   text.Contains(source, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private static JsonObject BuildCodexHooks(string command)
@@ -577,3 +632,7 @@ internal static class AgentHookInstaller
 internal readonly record struct AgentHookInstallResult(
     bool Success,
     string Message);
+
+internal readonly record struct AgentTrackingInstallStatus(
+    bool Codex,
+    bool Claude);

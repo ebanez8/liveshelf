@@ -1,4 +1,6 @@
 using System.IO.Pipes;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -77,13 +79,15 @@ static JsonObject NormalizeEvent(string source, string input)
         FirstString(raw, "session_id", "sessionId") ??
         FirstString(raw, "conversation_id", "conversationId", "thread_id", "threadId", "thread-id") ??
         FirstString(raw, "transcript_path", "transcriptPath") ??
-        FirstString(raw, "cwd") ??
         "unknown";
 
     return new JsonObject
     {
         ["source"] = source,
         ["sessionId"] = sessionId,
+        ["processId"] = Environment.ProcessId,
+        ["parentProcessIds"] = ToJsonArray(GetParentProcessIds(Environment.ProcessId)),
+        ["foregroundProcessId"] = GetForegroundProcessId(),
         ["turnId"] = FirstString(raw, "turn_id", "turnId", "turn-id", "submission_id", "submissionId", "submission-id"),
         ["eventName"] = eventName,
         ["cwd"] = FirstString(raw, "cwd"),
@@ -98,6 +102,76 @@ static JsonObject NormalizeEvent(string source, string input)
         ["filesChanged"] = FirstInt(raw, "files_changed", "filesChanged", "changed_files_count", "changedFilesCount"),
         ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
     };
+}
+
+static JsonArray ToJsonArray(IEnumerable<int> values)
+{
+    var array = new JsonArray();
+    foreach (var value in values)
+    {
+        array.Add(value);
+    }
+
+    return array;
+}
+
+static IReadOnlyList<int> GetParentProcessIds(int processId)
+{
+    var result = new List<int>();
+    var seen = new HashSet<int>();
+    var current = processId;
+    for (var depth = 0; depth < 16; depth++)
+    {
+        var parent = GetParentProcessId(current);
+        if (parent <= 0 || !seen.Add(parent))
+        {
+            break;
+        }
+
+        result.Add(parent);
+        current = parent;
+    }
+
+    return result;
+}
+
+static int GetParentProcessId(int processId)
+{
+    try
+    {
+        using var process = Process.GetProcessById(processId);
+        var info = new PROCESS_BASIC_INFORMATION();
+        var result = NtQueryInformationProcess(
+            process.Handle,
+            0,
+            ref info,
+            Marshal.SizeOf<PROCESS_BASIC_INFORMATION>(),
+            out _);
+        return result == 0 ? info.InheritedFromUniqueProcessId.ToInt32() : 0;
+    }
+    catch
+    {
+        return 0;
+    }
+}
+
+static int GetForegroundProcessId()
+{
+    try
+    {
+        var hwnd = GetForegroundWindow();
+        if (hwnd == IntPtr.Zero)
+        {
+            return 0;
+        }
+
+        GetWindowThreadProcessId(hwnd, out var processId);
+        return unchecked((int)processId);
+    }
+    catch
+    {
+        return 0;
+    }
 }
 
 static async Task<bool> TrySendToLiveShelfAsync(string payload)
@@ -330,4 +404,29 @@ static int? NodeToInt(JsonNode? node)
     return value.TryGetValue<string>(out var text) && int.TryParse(text, out var parsed)
         ? parsed
         : null;
+}
+
+[DllImport("ntdll.dll")]
+static extern int NtQueryInformationProcess(
+    IntPtr processHandle,
+    int processInformationClass,
+    ref PROCESS_BASIC_INFORMATION processInformation,
+    int processInformationLength,
+    out int returnLength);
+
+[DllImport("user32.dll")]
+static extern IntPtr GetForegroundWindow();
+
+[DllImport("user32.dll")]
+static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+[StructLayout(LayoutKind.Sequential)]
+struct PROCESS_BASIC_INFORMATION
+{
+    public IntPtr Reserved1;
+    public IntPtr PebBaseAddress;
+    public IntPtr Reserved2A;
+    public IntPtr Reserved2B;
+    public IntPtr UniqueProcessId;
+    public IntPtr InheritedFromUniqueProcessId;
 }

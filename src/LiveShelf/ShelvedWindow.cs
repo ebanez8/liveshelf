@@ -278,7 +278,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
         }
     }
 
-    public double PreviewHeight => IsExpanded ? 188 : 108;
+    public double PreviewHeight => IsExpanded ? 188 : 92;
 
     public Brush StatusBrush => IsSourceAlive ? LiveBrush : ClosedBrush;
 

@@ -39,20 +39,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const double PeekShelfWidth = 440;
     private const double ZoomShelfWidth = 780;
     private const double HiddenOffset = 18;
-    private const double CollapsedPreviewHeight = 108;
+    private const double CollapsedPreviewHeight = 92;
     private const double PeekPreviewHeight = 248;
     private const double ZoomPreviewHeight = 560;
     private const int CardEntryAnimationMs = 340;
     private const int ShelfAnimationMs = 560;
     private const int PeekAnimationMs = 500;
     private const int ZoomAnimationMs = 520;
-    private const int InteractiveActivationDelayMs = 500;
+    private const int InteractiveActivationDelayMs = 220;
     private const int AttentionAnimationMs = 720;
     private const int ReorderAnimationMs = 170;
     private const int DragShelfPollMs = 80;
     private const int DragShelfDwellMs = 420;
     private const int DragShelfHotZoneSize = 120;
     private const int DragShelfTitleBandHeight = 96;
+    private const double ThumbnailFrameInsetDip = 6;
 
     private static readonly Color CardBackgroundColor = Color.FromArgb(110, 43, 48, 56);
     private static readonly Color CardBorderColor = Color.FromArgb(50, 255, 255, 255);
@@ -181,6 +182,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
         };
 
+        RefreshAgentConnectionStatus();
         RegisterHotkeys();
         PositionShelfWindow(animate: false);
     }
@@ -591,6 +593,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 }
 
                 AnimateDraggedCardHome(item);
+                RefreshThumbnailsDuring(ReorderAnimationMs);
                 _cardDragItem = null;
                 _isReorderingCards = false;
                 e.Handled = true;
@@ -604,8 +607,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 releasedCard.Opacity = 1;
             }
 
-            if (item.IsInteractive)
+            if (item.IsInteractive || item.IsZoomed || _pendingInteractiveItem == item)
             {
+                e.Handled = true;
                 return;
             }
 
@@ -856,6 +860,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     ? "Connected"
                     : $"{label} on";
             AgentConnectionBrush = AgentConnectedBrush;
+            if (!label.EndsWith("test", StringComparison.OrdinalIgnoreCase))
+            {
+                RefreshAgentConnectionStatus();
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -865,6 +873,38 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             AgentConnectionToolTip = ex.Message;
             SystemSounds.Exclamation.Play();
         }
+    }
+
+    private void RefreshAgentConnectionStatus()
+    {
+        var status = AgentHookInstaller.GetInstalledTrackingStatus();
+        if (status.Codex && status.Claude)
+        {
+            AgentConnectionText = "Connected";
+            AgentConnectionBrush = AgentConnectedBrush;
+            AgentConnectionToolTip = "Codex and Claude hooks are connected";
+            return;
+        }
+
+        if (status.Codex)
+        {
+            AgentConnectionText = "Codex on";
+            AgentConnectionBrush = AgentConnectedBrush;
+            AgentConnectionToolTip = "Codex hooks are connected";
+            return;
+        }
+
+        if (status.Claude)
+        {
+            AgentConnectionText = "Claude on";
+            AgentConnectionBrush = AgentConnectedBrush;
+            AgentConnectionToolTip = "Claude hooks are connected";
+            return;
+        }
+
+        AgentConnectionText = "Connect";
+        AgentConnectionBrush = AgentIdleBrush;
+        AgentConnectionToolTip = "Connect Codex or Claude Code hooks";
     }
 
     private void MediaPlayPauseButton_Click(object sender, RoutedEventArgs e)
@@ -943,8 +983,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void PreviewSurface_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item || !item.IsInteractive)
+        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item)
         {
+            return;
+        }
+
+        if (!item.IsInteractive)
+        {
+            if (item.IsZoomed || _pendingInteractiveItem == item)
+            {
+                e.Handled = true;
+            }
+
             return;
         }
 
@@ -957,8 +1007,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void PreviewSurface_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item || !item.IsInteractive)
+        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item)
         {
+            return;
+        }
+
+        if (!item.IsInteractive)
+        {
+            if (item.IsZoomed || _pendingInteractiveItem == item)
+            {
+                e.Handled = true;
+            }
+
             return;
         }
 
@@ -969,8 +1029,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void PreviewSurface_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item || !item.IsInteractive)
+        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item)
         {
+            return;
+        }
+
+        if (!item.IsInteractive)
+        {
+            if (item.IsZoomed || _pendingInteractiveItem == item)
+            {
+                e.Handled = true;
+            }
+
             return;
         }
 
@@ -983,8 +1053,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void PreviewSurface_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
     {
-        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item || !item.IsInteractive)
+        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item)
         {
+            return;
+        }
+
+        if (!item.IsInteractive)
+        {
+            if (item.IsZoomed || _pendingInteractiveItem == item)
+            {
+                e.Handled = true;
+            }
+
             return;
         }
 
@@ -1090,6 +1170,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         e.Handled = true;
     }
 
+    private void PreviewSurface_RequestBringIntoView(object sender, RequestBringIntoViewEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: ShelvedWindow item } && item.IsZoomed)
+        {
+            e.Handled = true;
+        }
+    }
+
     private void PeekCollapseTimer_Tick(object? sender, EventArgs e)
     {
         _peekCollapseTimer.Stop();
@@ -1115,6 +1203,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (IsMouseOver || IsCursorInsidePreviewBounds(item))
+        {
+            return;
+        }
+
         var foreground = NativeMethods.GetForegroundWindow();
         if (foreground != IntPtr.Zero &&
             foreground != _windowHandle &&
@@ -1124,11 +1217,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 $"LiveShelf InteractiveMode exit card={item.Id} unrelatedForeground=0x{foreground.ToInt64():X}");
             DeactivateZoom(item);
             ClearPeek();
-            return;
-        }
-
-        if (IsMouseOver || IsCursorInsidePreviewBounds(item))
-        {
             return;
         }
 
@@ -1269,6 +1357,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         card.Opacity = 0.94;
         Panel.SetZIndex(card, 50);
+        UpdateThumbnailDestinations();
     }
 
     private void AnimateDraggedCardHome(ShelvedWindow item)
@@ -1287,12 +1376,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 {
                     Panel.SetZIndex(card, item.IsExpanded ? 10 : 0);
                     card.Opacity = 1;
+                    QueueThumbnailRefresh();
                 });
             }
             else
             {
                 Panel.SetZIndex(card, item.IsExpanded ? 10 : 0);
                 card.Opacity = 1;
+                QueueThumbnailRefresh();
             }
         }, DispatcherPriority.Loaded);
     }
@@ -1502,7 +1593,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (SupportsAutomaticInteractiveMode(item))
         {
             ScheduleInteractiveActivation(item);
-            FocusPreview(item);
         }
         else
         {
@@ -1565,7 +1655,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _pendingInteractiveItem = item;
         _interactiveExitSuppressedUntilUtc = DateTime.UtcNow.AddMilliseconds(InteractiveActivationDelayMs + 1200);
         StatusMessage = $"Zooming {item.ProcessName}";
-        RefreshThumbnailsDuring(InteractiveActivationDelayMs + 80);
+        RefreshThumbnailsDuring(ZoomAnimationMs + 120);
 
         RunAfter(InteractiveActivationDelayMs, () =>
         {
@@ -1581,6 +1671,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _shelver?.BeginInteractiveZoom(item, GetPreviewScreenBounds(item));
             _pendingInteractiveItem = null;
             _interactiveExitTimer.Start();
+            FocusPreview(item);
             StatusMessage = $"Using {item.ProcessName}";
             QueueThumbnailRefresh();
         });
@@ -1804,8 +1895,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         Rect rootBounds;
         try
         {
+            var previewRect = GetPreviewThumbnailRect(element);
             rootBounds = element.TransformToAncestor(RootSurface)
-                .TransformBounds(new Rect(0, 0, element.ActualWidth, element.ActualHeight));
+                .TransformBounds(previewRect);
         }
         catch (InvalidOperationException)
         {
@@ -1823,8 +1915,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             (int)Math.Round(rootBottomRight.X),
             (int)Math.Round(rootBottomRight.Y));
 
-        var screenTopLeft = element.PointToScreen(new Point(0, 0));
-        var screenBottomRight = element.PointToScreen(new Point(element.ActualWidth, element.ActualHeight));
+        var innerRect = GetPreviewThumbnailRect(element);
+        var screenTopLeft = element.PointToScreen(innerRect.TopLeft);
+        var screenBottomRight = element.PointToScreen(innerRect.BottomRight);
         screenBounds = new NativeMethods.RECT(
             (int)Math.Round(screenTopLeft.X),
             (int)Math.Round(screenTopLeft.Y),
@@ -1834,6 +1927,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return true;
     }
 
+    private static Rect GetPreviewThumbnailRect(FrameworkElement element)
+    {
+        var inset = Math.Min(
+            ThumbnailFrameInsetDip,
+            Math.Max(0, Math.Min(element.ActualWidth, element.ActualHeight) / 4));
+        return new Rect(
+            inset,
+            inset,
+            Math.Max(0, element.ActualWidth - (inset * 2)),
+            Math.Max(0, element.ActualHeight - (inset * 2)));
+    }
+
     private void ForwardMouseToSource(
         ShelvedWindow item,
         FrameworkElement preview,
@@ -1841,14 +1946,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         int keyState,
         Point position)
     {
+        var previewRect = GetPreviewThumbnailRect(preview);
+        if (!previewRect.Contains(position))
+        {
+            return;
+        }
+
         _shelver?.ForwardMouseInput(
             item,
             message,
             keyState | GetModifierKeyState(),
-            position.X,
-            position.Y,
-            preview.ActualWidth,
-            preview.ActualHeight);
+            position.X - previewRect.Left,
+            position.Y - previewRect.Top,
+            previewRect.Width,
+            previewRect.Height);
     }
 
     private void ForwardWheelToSource(ShelvedWindow item, MouseWheelEventArgs e, FrameworkElement? preview = null)
@@ -1860,9 +1971,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         var position = e.GetPosition(preview);
-        var x = Math.Clamp(position.X, 0, Math.Max(0, preview.ActualWidth - 1));
-        var y = Math.Clamp(position.Y, 0, Math.Max(0, preview.ActualHeight - 1));
-        var screenPoint = preview.PointToScreen(new Point(x, y));
+        var previewRect = GetPreviewThumbnailRect(preview);
+        if (!previewRect.Contains(position))
+        {
+            return;
+        }
+
+        var x = Math.Clamp(position.X - previewRect.Left, 0, Math.Max(0, previewRect.Width - 1));
+        var y = Math.Clamp(position.Y - previewRect.Top, 0, Math.Max(0, previewRect.Height - 1));
+        var screenPoint = preview.PointToScreen(new Point(x + previewRect.Left, y + previewRect.Top));
 
         _shelver?.ForwardMouseInput(
             item,
@@ -1870,8 +1987,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             GetModifierKeyState(),
             x,
             y,
-            preview.ActualWidth,
-            preview.ActualHeight,
+            previewRect.Width,
+            previewRect.Height,
             e.Delta,
             screenPoint.X,
             screenPoint.Y);

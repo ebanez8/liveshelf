@@ -24,6 +24,8 @@ internal sealed class AgentSession
 
     public HashSet<string> ActiveToolUseIds { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    public HashSet<int> RelatedProcessIds { get; } = [];
+
     public DateTime LastEventAtUtc { get; set; } = DateTime.UtcNow;
 
     public DateTime LastPromptAtUtc { get; set; }

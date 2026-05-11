@@ -11,6 +11,12 @@ internal sealed class AgentEvent
 
     public string TurnId { get; init; } = string.Empty;
 
+    public int ProcessId { get; init; }
+
+    public int[] ParentProcessIds { get; init; } = [];
+
+    public int ForegroundProcessId { get; init; }
+
     [JsonPropertyName("eventName")]
     public string EventName { get; init; } = string.Empty;
 

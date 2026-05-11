@@ -10,6 +10,7 @@ internal static class NativeMethods
     internal const int WM_HOTKEY = 0x0312;
     internal const int WM_NCHITTEST = 0x0084;
     internal const int WM_CLOSE = 0x0010;
+    internal const int WM_SETFOCUS = 0x0007;
     internal const int WM_KEYDOWN = 0x0100;
     internal const int WM_KEYUP = 0x0101;
     internal const int WM_CHAR = 0x0102;
@@ -76,6 +77,7 @@ internal static class NativeMethods
 
     internal static readonly IntPtr HWND_TOPMOST = new(-1);
     internal static readonly IntPtr HWND_NOTOPMOST = new(-2);
+    internal static readonly IntPtr HWND_TOP = new(0);
     internal static readonly IntPtr HWND_BOTTOM = new(1);
 
     private static readonly HashSet<string> BlockedWindowClasses = new(StringComparer.Ordinal)
@@ -160,6 +162,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern IntPtr SetFocus(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr SetActiveWindow(IntPtr hWnd);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
