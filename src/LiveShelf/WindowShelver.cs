@@ -145,7 +145,6 @@ internal sealed class WindowShelver
             return;
         }
 
-        EndInteractiveZoom(item);
         _agentSessions.UnlinkCard(item);
         UnregisterThumbnail(item);
 
@@ -163,7 +162,6 @@ internal sealed class WindowShelver
             return;
         }
 
-        EndInteractiveZoom(item);
         _agentSessions.UnlinkCard(item);
         UnregisterThumbnail(item);
 
@@ -185,7 +183,6 @@ internal sealed class WindowShelver
             return;
         }
 
-        EndInteractiveZoom(item);
         _agentSessions.UnlinkCard(item);
         UnregisterThumbnail(item);
 
@@ -280,7 +277,8 @@ internal sealed class WindowShelver
         var hasSourceSize = queryResult >= 0 && DwmThumbnailLayout.HasUsableSourceSize(sourceSize);
         if (hasSourceSize)
         {
-            destination = DwmThumbnailLayout.ComputeContainDestination(destination, sourceSize);
+            var layoutSourceSize = GetStableThumbnailLayoutSize(item, sourceSize);
+            destination = DwmThumbnailLayout.ComputeContainDestination(destination, layoutSourceSize);
             ObserveThumbnailSourceSize(item, sourceSize);
         }
         else
@@ -317,157 +315,6 @@ internal sealed class WindowShelver
             item.IsSourceAlive = NativeMethods.IsWindow(item.SourceHwnd);
             RecordBadPreviewSample(item, "Live preview refresh failed");
         }
-    }
-
-    public void BeginInteractiveZoom(ShelvedWindow item, NativeMethods.RECT screenBounds)
-    {
-        if (!_items.Contains(item) || !item.IsSourceAlive || !NativeMethods.IsWindow(item.SourceHwnd))
-        {
-            return;
-        }
-
-        item.IsInteractive = true;
-        item.IsPreparingInteractive = false;
-        item.LastInputTargetHwnd = IntPtr.Zero;
-        Trace.WriteLine(
-            $"LiveShelf InteractiveMode enter card={item.Id} hwnd=0x{item.SourceHwnd.ToInt64():X} policy={item.SourceWindowPolicy}");
-        if (screenBounds.Width > 0 && screenBounds.Height > 0)
-        {
-            PositionInteractiveSource(item, screenBounds);
-        }
-
-        ThumbnailRefreshRequested?.Invoke(this, EventArgs.Empty);
-    }
-
-    public void PrepareInteractiveZoom(ShelvedWindow item, NativeMethods.RECT screenBounds)
-    {
-        if (!_items.Contains(item) ||
-            item.IsInteractive ||
-            !item.IsSourceAlive ||
-            !NativeMethods.IsWindow(item.SourceHwnd) ||
-            screenBounds.Width <= 0 ||
-            screenBounds.Height <= 0)
-        {
-            return;
-        }
-
-        var isFirstPrepare = !item.IsPreparingInteractive;
-        item.IsPreparingInteractive = true;
-        PositionPreparedSource(item, screenBounds, isFirstPrepare);
-    }
-
-    public void CancelInteractivePreparation(ShelvedWindow item)
-    {
-        if (!item.IsPreparingInteractive || item.IsInteractive)
-        {
-            return;
-        }
-
-        item.IsPreparingInteractive = false;
-        ParkInteractiveSource(item);
-    }
-
-    public void UpdateInteractiveZoomBounds(ShelvedWindow item, NativeMethods.RECT screenBounds)
-    {
-        if (!CanForwardInput(item) || screenBounds.Width <= 0 || screenBounds.Height <= 0)
-        {
-            return;
-        }
-
-        PositionInteractiveSource(item, screenBounds);
-    }
-
-    public void EndInteractiveZoom(ShelvedWindow item)
-    {
-        if (!item.IsInteractive && !item.IsPreparingInteractive)
-        {
-            return;
-        }
-
-        item.IsInteractive = false;
-        item.IsPreparingInteractive = false;
-        item.LastInputTargetHwnd = IntPtr.Zero;
-        Trace.WriteLine(
-            $"LiveShelf InteractiveMode exit card={item.Id} hwnd=0x{item.SourceHwnd.ToInt64():X} policy={item.SourceWindowPolicy}");
-        ParkInteractiveSource(item);
-        RefreshThumbnailRegistration(
-            item,
-            unregisterFirst: item.SourceWindowPolicy == SourceWindowPolicy.Media);
-        ThumbnailRefreshRequested?.Invoke(this, EventArgs.Empty);
-        _ = RefreshThumbnailAfterAsync(item, MediaThumbnailRecoveryDelay, reRegister: false);
-        if (item.SourceWindowPolicy != SourceWindowPolicy.Media)
-        {
-            _ = RefreshThumbnailAfterAsync(item, TimeSpan.FromMilliseconds(650), reRegister: true);
-        }
-    }
-
-    public void ForwardMouseInput(
-        ShelvedWindow item,
-        int message,
-        int keyState,
-        double x,
-        double y,
-        double previewWidth,
-        double previewHeight,
-        int wheelDelta = 0,
-        double screenX = 0,
-        double screenY = 0)
-    {
-        if (!CanForwardInput(item) || previewWidth <= 0 || previewHeight <= 0)
-        {
-            return;
-        }
-
-        if (!TryMapPreviewPointToSourceClient(
-                item,
-                x,
-                y,
-                previewWidth,
-                previewHeight,
-                out var sourceClientX,
-                out var sourceClientY,
-                out var sourceScreenX,
-                out var sourceScreenY))
-        {
-            return;
-        }
-
-        var target = GetInputTarget(item, sourceClientX, sourceClientY, out var targetX, out var targetY);
-        item.LastInputTargetHwnd = target;
-        PrepareSourceForInput(item, target);
-
-        var wParam = message == NativeMethods.WM_MOUSEWHEEL
-            ? MakeWheelWParam(keyState, wheelDelta)
-            : new IntPtr(keyState);
-        var lParam = message == NativeMethods.WM_MOUSEWHEEL
-            ? MakeLParam(sourceScreenX, sourceScreenY)
-            : MakeLParam(targetX, targetY);
-
-        NativeMethods.PostMessageW(target, (uint)message, wParam, lParam);
-    }
-
-    public void ForwardKeyInput(ShelvedWindow item, int message, int virtualKey)
-    {
-        if (!CanForwardInput(item))
-        {
-            return;
-        }
-
-        var target = GetKeyboardTarget(item);
-        PrepareSourceForInput(item, target);
-        NativeMethods.PostMessageW(target, (uint)message, new IntPtr(virtualKey), IntPtr.Zero);
-    }
-
-    public void ForwardCharInput(ShelvedWindow item, char character)
-    {
-        if (!CanForwardInput(item))
-        {
-            return;
-        }
-
-        var target = GetKeyboardTarget(item);
-        PrepareSourceForInput(item, target);
-        NativeMethods.PostMessageW(target, NativeMethods.WM_CHAR, new IntPtr(character), IntPtr.Zero);
     }
 
     private static void UpdateThumbnailVisibility(ShelvedWindow item, bool visible)
@@ -513,6 +360,29 @@ internal sealed class WindowShelver
         }
 
         return !item.IsMediaCard;
+    }
+
+    private static NativeMethods.SIZE GetStableThumbnailLayoutSize(
+        ShelvedWindow item,
+        NativeMethods.SIZE queriedSize)
+    {
+        if (!DwmThumbnailLayout.IsSeverelyWrongSourceSize(queriedSize, item.OriginalSourceRect))
+        {
+            return queriedSize;
+        }
+
+        if (DwmThumbnailLayout.HasUsableSourceSize(item.LastThumbnailSourceSize))
+        {
+            return item.LastThumbnailSourceSize;
+        }
+
+        return item.OriginalSourceRect.Width > 0 && item.OriginalSourceRect.Height > 0
+            ? new NativeMethods.SIZE
+            {
+                Width = item.OriginalSourceRect.Width,
+                Height = item.OriginalSourceRect.Height
+            }
+            : queriedSize;
     }
 
     private static NativeMethods.RECT ParkSourceWindow(
@@ -611,130 +481,10 @@ internal sealed class WindowShelver
             parkedY + height);
     }
 
-    private static void PositionInteractiveSource(ShelvedWindow item, NativeMethods.RECT screenBounds)
-    {
-        if (screenBounds.Width <= 0 || screenBounds.Height <= 0)
-        {
-            return;
-        }
-
-        item.InteractiveBounds = screenBounds;
-        if (SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy))
-        {
-            PositionLivePreviewInteractiveSource(item);
-            return;
-        }
-
-        Trace.WriteLine(
-            $"LiveShelf parked normal interactive hwnd=0x{item.SourceHwnd.ToInt64():X} card={item.Id}");
-        var parkedBounds = item.ParkedBounds.Width > 0 && item.ParkedBounds.Height > 0
-            ? item.ParkedBounds
-            : GetParkedSourceRect(item.OriginalPlacement.NormalPosition);
-        var sourceBounds = GetInteractiveSourceBounds(item, parkedBounds);
-
-        NativeMethods.SetWindowPos(
-            item.SourceHwnd,
-            NativeMethods.HWND_BOTTOM,
-            parkedBounds.Left,
-            parkedBounds.Top,
-            sourceBounds.Width,
-            sourceBounds.Height,
-            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER | NativeMethods.SWP_SHOWWINDOW);
-    }
-
-    private static void PositionPreparedSource(
-        ShelvedWindow item,
-        NativeMethods.RECT screenBounds,
-        bool restoreWindow)
-    {
-        if (screenBounds.Width <= 0 || screenBounds.Height <= 0)
-        {
-            return;
-        }
-
-        if (SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy))
-        {
-            item.InteractiveBounds = screenBounds;
-            PositionLivePreviewInteractiveSource(item);
-            return;
-        }
-
-        var parkedBounds = item.ParkedBounds.Width > 0 && item.ParkedBounds.Height > 0
-            ? item.ParkedBounds
-            : GetParkedSourceRect(item.OriginalPlacement.NormalPosition);
-        var sourceBounds = GetInteractiveSourceBounds(item, parkedBounds);
-
-        item.InteractiveBounds = screenBounds;
-        NativeMethods.ShowWindow(
-            item.SourceHwnd,
-            restoreWindow ? NativeMethods.SW_RESTORE : NativeMethods.SW_SHOWNOACTIVATE);
-        NativeMethods.SetWindowPos(
-            item.SourceHwnd,
-            NativeMethods.HWND_BOTTOM,
-            parkedBounds.Left,
-            parkedBounds.Top,
-            sourceBounds.Width,
-            sourceBounds.Height,
-            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER | NativeMethods.SWP_SHOWWINDOW);
-    }
-
-    private static NativeMethods.RECT GetInteractiveSourceBounds(
-        ShelvedWindow item,
-        NativeMethods.RECT fallbackBounds)
-    {
-        if (item.OriginalSourceRect.Width > 0 && item.OriginalSourceRect.Height > 0)
-        {
-            return item.OriginalSourceRect;
-        }
-
-        return fallbackBounds;
-    }
-
-    private static void ParkInteractiveSource(ShelvedWindow item)
-    {
-        if (SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy))
-        {
-            item.ParkedBounds = ParkLivePreviewSourceWindow(item);
-            item.IsPreparingInteractive = false;
-            item.InteractiveBounds = default;
-            return;
-        }
-
-        var parkedBounds = item.ParkedBounds.Width > 0 && item.ParkedBounds.Height > 0
-            ? item.ParkedBounds
-            : GetParkedSourceRect(item.OriginalPlacement.NormalPosition);
-
-        NativeMethods.SetWindowPos(
-            item.SourceHwnd,
-            NativeMethods.HWND_NOTOPMOST,
-            parkedBounds.Left,
-            parkedBounds.Top,
-            parkedBounds.Width,
-            parkedBounds.Height,
-            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER | NativeMethods.SWP_SHOWWINDOW);
-        item.IsPreparingInteractive = false;
-        item.InteractiveBounds = default;
-    }
-
-    private static void PositionLivePreviewInteractiveSource(ShelvedWindow item)
-    {
-        Trace.WriteLine(
-            $"LiveShelf source demote for explicit InteractiveMode card={item.Id} hwnd=0x{item.SourceHwnd.ToInt64():X} policy={item.SourceWindowPolicy}");
-        NativeMethods.SetWindowPos(
-            item.SourceHwnd,
-            NativeMethods.HWND_BOTTOM,
-            0,
-            0,
-            0,
-            0,
-            SourceWindowPolicyRules.GetLivePreviewInteractiveFlags());
-    }
-
     private void RestoreForShutdown(ShelvedWindow item)
     {
         try
         {
-            EndInteractiveZoom(item);
             _agentSessions.UnlinkCard(item);
             UnregisterThumbnail(item);
             RestoreSourceWindow(item, activate: false);
@@ -842,8 +592,7 @@ internal sealed class WindowShelver
             await Task.Delay(delay);
             await _dispatcher.InvokeAsync(() =>
             {
-                if (!_items.Contains(item) || !item.IsSourceAlive || !NativeMethods.IsWindow(item.SourceHwnd) ||
-                    item.IsInteractive || item.IsPreparingInteractive)
+                if (!_items.Contains(item) || !item.IsSourceAlive || !NativeMethods.IsWindow(item.SourceHwnd))
                 {
                     return;
                 }
@@ -866,15 +615,15 @@ internal sealed class WindowShelver
 
     private void ObserveThumbnailSourceSize(ShelvedWindow item, NativeMethods.SIZE sourceSize)
     {
-        item.LastThumbnailSourceSize = sourceSize;
-        if (!SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy))
-        {
-            return;
-        }
-
         if (DwmThumbnailLayout.IsSeverelyWrongSourceSize(sourceSize, item.OriginalSourceRect))
         {
             RecordBadPreviewSample(item, "Live preview source resized unexpectedly");
+            return;
+        }
+
+        item.LastThumbnailSourceSize = sourceSize;
+        if (!SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy))
+        {
             return;
         }
 
@@ -2425,222 +2174,6 @@ internal sealed class WindowShelver
         var right = Math.Min(rect.Right, virtualScreen.Right);
         var bottom = Math.Min(rect.Bottom, virtualScreen.Bottom);
         return right - left >= 96 && bottom - top >= 96;
-    }
-
-    private bool CanForwardInput(ShelvedWindow item)
-    {
-        return _items.Contains(item) &&
-               item.IsInteractive &&
-               item.IsSourceAlive &&
-               NativeMethods.IsWindow(item.SourceHwnd);
-    }
-
-    private static IntPtr GetInputTarget(ShelvedWindow item, int sourceX, int sourceY, out int targetX, out int targetY)
-    {
-        targetX = sourceX;
-        targetY = sourceY;
-
-        if (!NativeMethods.IsWindow(item.SourceHwnd))
-        {
-            return item.SourceHwnd;
-        }
-
-        var current = item.SourceHwnd;
-        var point = new NativeMethods.POINT
-        {
-            X = sourceX,
-            Y = sourceY
-        };
-
-        for (var depth = 0; depth < 6; depth++)
-        {
-            var child = NativeMethods.ChildWindowFromPointEx(
-                current,
-                point,
-                NativeMethods.CWP_SKIPINVISIBLE | NativeMethods.CWP_SKIPDISABLED);
-
-            if (child == IntPtr.Zero || child == current || !NativeMethods.IsWindow(child))
-            {
-                break;
-            }
-
-            NativeMethods.MapWindowPoints(current, child, ref point, 1);
-            current = child;
-        }
-
-        targetX = point.X;
-        targetY = point.Y;
-        return current;
-    }
-
-    private static IntPtr GetKeyboardTarget(ShelvedWindow item)
-    {
-        return item.LastInputTargetHwnd != IntPtr.Zero && NativeMethods.IsWindow(item.LastInputTargetHwnd)
-            ? item.LastInputTargetHwnd
-            : item.SourceHwnd;
-    }
-
-    private static void PrepareSourceForInput(ShelvedWindow item, IntPtr target)
-    {
-        var focusTarget = target == IntPtr.Zero ? item.SourceHwnd : target;
-        if (!NativeMethods.IsWindow(focusTarget))
-        {
-            focusTarget = item.SourceHwnd;
-        }
-
-        AttachAndFocusWindow(item.SourceHwnd);
-        if (focusTarget != item.SourceHwnd)
-        {
-            AttachAndFocusWindow(focusTarget);
-        }
-
-        NativeMethods.PostMessageW(item.SourceHwnd, NativeMethods.WM_SETFOCUS, IntPtr.Zero, IntPtr.Zero);
-        NativeMethods.PostMessageW(focusTarget, NativeMethods.WM_SETFOCUS, IntPtr.Zero, IntPtr.Zero);
-    }
-
-    private static void AttachAndFocusWindow(IntPtr hwnd)
-    {
-        if (hwnd == IntPtr.Zero || !NativeMethods.IsWindow(hwnd))
-        {
-            return;
-        }
-
-        var currentThread = NativeMethods.GetCurrentThreadId();
-        var targetThread = NativeMethods.GetWindowThreadProcessId(hwnd, out _);
-        var attached = targetThread != 0 &&
-                       targetThread != currentThread &&
-                       NativeMethods.AttachThreadInput(currentThread, targetThread, true);
-
-        try
-        {
-            NativeMethods.SetActiveWindow(hwnd);
-            NativeMethods.SetFocus(hwnd);
-        }
-        finally
-        {
-            if (attached)
-            {
-                NativeMethods.AttachThreadInput(currentThread, targetThread, false);
-            }
-        }
-    }
-
-    private static bool TryMapPreviewPointToSourceClient(
-        ShelvedWindow item,
-        double x,
-        double y,
-        double previewWidth,
-        double previewHeight,
-        out int sourceClientX,
-        out int sourceClientY,
-        out int sourceScreenX,
-        out int sourceScreenY)
-    {
-        sourceClientX = 0;
-        sourceClientY = 0;
-        sourceScreenX = 0;
-        sourceScreenY = 0;
-
-        var sourceSize = new NativeMethods.SIZE
-        {
-            Width = (int)Math.Round(previewWidth),
-            Height = (int)Math.Round(previewHeight)
-        };
-
-        if (item.ThumbnailHandle != IntPtr.Zero)
-        {
-            NativeMethods.DwmQueryThumbnailSourceSize(item.ThumbnailHandle, out sourceSize);
-        }
-
-        if (sourceSize.Width <= 0 || sourceSize.Height <= 0)
-        {
-            return false;
-        }
-
-        var sourceRatio = sourceSize.Width / (double)sourceSize.Height;
-        var previewRatio = previewWidth / previewHeight;
-        double fittedLeft = 0;
-        double fittedTop = 0;
-        var fittedWidth = previewWidth;
-        var fittedHeight = previewHeight;
-        if (sourceRatio > previewRatio)
-        {
-            fittedHeight = previewWidth / sourceRatio;
-            fittedTop = (previewHeight - fittedHeight) / 2;
-        }
-        else
-        {
-            fittedWidth = previewHeight * sourceRatio;
-            fittedLeft = (previewWidth - fittedWidth) / 2;
-        }
-
-        if (x < fittedLeft || x > fittedLeft + fittedWidth || y < fittedTop || y > fittedTop + fittedHeight)
-        {
-            return false;
-        }
-
-        var sourceWindowX = Math.Clamp((int)Math.Round(((x - fittedLeft) / fittedWidth) * sourceSize.Width), 0, sourceSize.Width - 1);
-        var sourceWindowY = Math.Clamp((int)Math.Round(((y - fittedTop) / fittedHeight) * sourceSize.Height), 0, sourceSize.Height - 1);
-
-        if (!TryConvertWindowPointToClientPoint(
-                item.SourceHwnd,
-                sourceWindowX,
-                sourceWindowY,
-                out sourceClientX,
-                out sourceClientY,
-                out sourceScreenX,
-                out sourceScreenY))
-        {
-            sourceClientX = sourceWindowX;
-            sourceClientY = sourceWindowY;
-            sourceScreenX = sourceWindowX;
-            sourceScreenY = sourceWindowY;
-        }
-
-        return true;
-    }
-
-    private static bool TryConvertWindowPointToClientPoint(
-        IntPtr hwnd,
-        int windowX,
-        int windowY,
-        out int clientX,
-        out int clientY,
-        out int screenX,
-        out int screenY)
-    {
-        clientX = windowX;
-        clientY = windowY;
-        screenX = windowX;
-        screenY = windowY;
-
-        if (!NativeMethods.GetWindowRect(hwnd, out var windowRect) ||
-            !NativeMethods.GetClientRect(hwnd, out var clientRect))
-        {
-            return false;
-        }
-
-        var clientOrigin = new NativeMethods.POINT();
-        if (!NativeMethods.ClientToScreen(hwnd, ref clientOrigin))
-        {
-            return false;
-        }
-
-        screenX = windowRect.Left + windowX;
-        screenY = windowRect.Top + windowY;
-        clientX = Math.Clamp(screenX - clientOrigin.X, 0, Math.Max(0, clientRect.Width - 1));
-        clientY = Math.Clamp(screenY - clientOrigin.Y, 0, Math.Max(0, clientRect.Height - 1));
-        return true;
-    }
-
-    private static IntPtr MakeLParam(int lowWord, int highWord)
-    {
-        return new IntPtr((highWord << 16) | (lowWord & 0xFFFF));
-    }
-
-    private static IntPtr MakeWheelWParam(int keyState, int wheelDelta)
-    {
-        return new IntPtr((wheelDelta << 16) | (keyState & 0xFFFF));
     }
 
     private static void UnregisterThumbnail(ShelvedWindow item)

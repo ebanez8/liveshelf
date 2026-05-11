@@ -593,7 +593,7 @@ internal static class AgentHookInstaller
                 ["hook_event_name"] = "LiveShelfHookTest",
                 ["session_id"] = $"liveshelf-hook-test-{Guid.NewGuid():N}",
                 ["cwd"] = Environment.CurrentDirectory
-            }.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
+            }.ToJsonString();
 
             process.StandardInput.Write(payload);
             process.StandardInput.Close();

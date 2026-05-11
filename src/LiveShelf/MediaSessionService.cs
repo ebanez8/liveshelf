@@ -79,6 +79,10 @@ internal sealed class MediaSessionService : IDisposable
         catch (Exception ex) when (IsRecoverableMediaException(ex))
         {
         }
+        catch (Exception ex)
+        {
+            CrashLogger.Log(ex);
+        }
     }
 
     public void Dispose()
@@ -119,6 +123,10 @@ internal sealed class MediaSessionService : IDisposable
         catch (Exception ex) when (IsRecoverableMediaException(ex))
         {
         }
+        catch (Exception ex)
+        {
+            CrashLogger.Log(ex);
+        }
     }
 
     private void TimelineTimer_Tick(object? sender, EventArgs e)
@@ -135,6 +143,13 @@ internal sealed class MediaSessionService : IDisposable
         }
         catch (ObjectDisposedException)
         {
+        }
+        catch (Exception ex) when (IsRecoverableMediaException(ex))
+        {
+        }
+        catch (Exception ex)
+        {
+            CrashLogger.Log(ex);
         }
     }
 
@@ -267,6 +282,10 @@ internal sealed class MediaSessionService : IDisposable
         catch (Exception ex) when (IsRecoverableMediaException(ex))
         {
         }
+        catch (Exception ex)
+        {
+            CrashLogger.Log(ex);
+        }
         finally
         {
             _isRefreshing = false;
@@ -338,6 +357,11 @@ internal sealed class MediaSessionService : IDisposable
         }
         catch (Exception ex) when (IsRecoverableMediaException(ex))
         {
+            return null;
+        }
+        catch (Exception ex)
+        {
+            CrashLogger.Log(ex);
             return null;
         }
     }

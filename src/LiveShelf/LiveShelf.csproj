@@ -22,7 +22,7 @@
     <Copy SourceFiles="@(LiveShelfBridgeOutput)"
           DestinationFolder="$(OutDir)"
           SkipUnchangedFiles="true"
-          Condition="Exists('%(LiveShelfBridgeOutput.Identity)')" />
+          Condition="Exists('%(LiveShelfBridgeOutput.Identity)') and !Exists('$(OutDir)liveshelf-bridge.dll')" />
   </Target>
 
 </Project>

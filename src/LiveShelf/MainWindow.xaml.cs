@@ -16,7 +16,6 @@ using Microsoft.Win32;
 using Brush = System.Windows.Media.Brush;
 using Button = System.Windows.Controls.Button;
 using Color = System.Windows.Media.Color;
-using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 using MouseEventArgs = System.Windows.Input.MouseEventArgs;
 using Panel = System.Windows.Controls.Panel;
 using Point = System.Windows.Point;
@@ -46,14 +45,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const int ShelfAnimationMs = 560;
     private const int PeekAnimationMs = 500;
     private const int ZoomAnimationMs = 520;
-    private const int InteractiveActivationDelayMs = 220;
     private const int AttentionAnimationMs = 720;
     private const int ReorderAnimationMs = 170;
     private const int DragShelfPollMs = 80;
     private const int DragShelfDwellMs = 420;
     private const int DragShelfHotZoneSize = 120;
     private const int DragShelfTitleBandHeight = 96;
-    private const double ThumbnailFrameInsetDip = 6;
+    private const double ThumbnailFrameInsetDip = 2;
 
     private static readonly Color CardBackgroundColor = Color.FromArgb(110, 43, 48, 56);
     private static readonly Color CardBorderColor = Color.FromArgb(50, 255, 255, 255);
@@ -66,11 +64,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private readonly ObservableCollection<ShelvedWindow> _items = [];
     private readonly Dictionary<ShelvedWindow, FrameworkElement> _cardElements = [];
+    private readonly Dictionary<ShelvedWindow, FrameworkElement> _previewHostElements = [];
     private readonly Dictionary<ShelvedWindow, FrameworkElement> _previewElements = [];
     private readonly DispatcherTimer _peekCollapseTimer;
-    private readonly DispatcherTimer _interactiveExitTimer;
     private readonly DispatcherTimer _dragShelfTimer;
-    private ShelvedWindow? _pendingInteractiveItem;
     private HwndSource? _source;
     private IntPtr _windowHandle;
     private WindowShelver? _shelver;
@@ -81,10 +78,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _isShelfHidden;
     private bool _hasRestoredShelvedWindowsForShutdown;
     private DateTime _thumbnailAnimationRefreshUntilUtc;
-    private DateTime _interactiveExitSuppressedUntilUtc;
     private DateTime _dragShelfCandidateEnteredUtc;
     private int _shelfAnimationGeneration;
-    private int _interactiveActivationGeneration;
     private IntPtr _dragShelfCandidateHwnd;
     private bool _dragShelfTriggeredWhilePressed;
     private Point _cardDragStartPoint;
@@ -108,12 +103,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Interval = TimeSpan.FromMilliseconds(260)
         };
         _peekCollapseTimer.Tick += PeekCollapseTimer_Tick;
-
-        _interactiveExitTimer = new DispatcherTimer
-        {
-            Interval = TimeSpan.FromMilliseconds(220)
-        };
-        _interactiveExitTimer.Tick += InteractiveExitTimer_Tick;
 
         _dragShelfTimer = new DispatcherTimer
         {
@@ -207,33 +196,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         RestoreShelvedWindowsForShutdown();
     }
 
-    protected override void OnDeactivated(EventArgs e)
-    {
-        base.OnDeactivated(e);
-
-        if (_zoomedItem is { IsInteractive: true } item)
-        {
-            if (DateTime.UtcNow < _interactiveExitSuppressedUntilUtc)
-            {
-                return;
-            }
-
-            var foreground = NativeMethods.GetForegroundWindow();
-            if (foreground == item.SourceHwnd)
-            {
-                Trace.WriteLine(
-                    $"LiveShelf InteractiveMode retained card={item.Id} foregroundSource=0x{foreground.ToInt64():X}");
-                return;
-            }
-
-            Trace.WriteLine(
-                $"LiveShelf InteractiveMode exit card={item.Id} foregroundChanged=0x{foreground.ToInt64():X}");
-            DeactivateZoom(item);
-        }
-
-        ReleaseAllPreviewMouseCapture("window deactivated");
-    }
-
     internal void RestoreShelvedWindowsForShutdown()
     {
         if (_hasRestoredShelvedWindowsForShutdown)
@@ -254,16 +216,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (_zoomedItem is { } item)
         {
-            if (item.IsInteractive)
-            {
-                return;
-            }
-
-            if (_pendingInteractiveItem == item)
-            {
-                return;
-            }
-
             DeactivateZoom(item);
             RunAfter(ZoomAnimationMs, () =>
             {
@@ -607,7 +559,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 releasedCard.Opacity = 1;
             }
 
-            if (item.IsInteractive || item.IsZoomed || _pendingInteractiveItem == item)
+            if (item.IsZoomed)
             {
                 e.Handled = true;
                 return;
@@ -677,12 +629,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        if (item.IsInteractive)
-        {
-            ForwardWheelToSource(item, e);
-            return;
-        }
-
         if ((Keyboard.Modifiers & ModifierKeys.Control) == 0 || item != _peekedItem)
         {
             return;
@@ -692,6 +638,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (e.Delta > 0)
         {
             ActivateZoom(item);
+        }
+        else if (e.Delta < 0 && item.IsZoomed)
+        {
+            DeactivateZoom(item);
         }
     }
 
@@ -953,16 +903,45 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private void PreviewSurface_Loaded(object sender, RoutedEventArgs e)
+    private void PreviewHost_Loaded(object sender, RoutedEventArgs e)
     {
         if (sender is FrameworkElement element && element.Tag is ShelvedWindow item)
         {
-            _previewElements[item] = element;
+            _previewHostElements[item] = element;
             element.Height = item.IsZoomed
                 ? GetZoomPreviewHeight()
                 : item.IsExpanded
                     ? PeekPreviewHeight
                     : CollapsedPreviewHeight;
+            UpdatePreviewFrame(item);
+            QueueThumbnailRefresh();
+        }
+    }
+
+    private void PreviewHost_Unloaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement element && element.Tag is ShelvedWindow item)
+        {
+            _previewHostElements.Remove(item);
+        }
+    }
+
+    private void PreviewHost_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: ShelvedWindow item })
+        {
+            UpdatePreviewFrame(item);
+        }
+
+        QueueThumbnailRefresh();
+    }
+
+    private void PreviewSurface_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement element && element.Tag is ShelvedWindow item)
+        {
+            _previewElements[item] = element;
+            UpdatePreviewFrame(item);
             QueueThumbnailRefresh();
         }
     }
@@ -971,7 +950,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (sender is FrameworkElement element && element.Tag is ShelvedWindow item)
         {
-            ReleasePreviewMouseCapture(item, "preview unloaded");
             _previewElements.Remove(item);
         }
     }
@@ -981,140 +959,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         QueueThumbnailRefresh();
     }
 
-    private void PreviewSurface_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item)
-        {
-            return;
-        }
-
-        if (!item.IsInteractive)
-        {
-            if (item.IsZoomed || _pendingInteractiveItem == item)
-            {
-                e.Handled = true;
-            }
-
-            return;
-        }
-
-        preview.Focus();
-        Keyboard.Focus(preview);
-        CapturePreviewMouse(preview, item, "left down");
-        ForwardMouseToSource(item, preview, NativeMethods.WM_LBUTTONDOWN, NativeMethods.MK_LBUTTON, e.GetPosition(preview));
-        e.Handled = true;
-    }
-
-    private void PreviewSurface_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
-    {
-        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item)
-        {
-            return;
-        }
-
-        if (!item.IsInteractive)
-        {
-            if (item.IsZoomed || _pendingInteractiveItem == item)
-            {
-                e.Handled = true;
-            }
-
-            return;
-        }
-
-        ForwardMouseToSource(item, preview, NativeMethods.WM_LBUTTONUP, 0, e.GetPosition(preview));
-        ReleasePreviewMouseCapture(item, "left up");
-        e.Handled = true;
-    }
-
-    private void PreviewSurface_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item)
-        {
-            return;
-        }
-
-        if (!item.IsInteractive)
-        {
-            if (item.IsZoomed || _pendingInteractiveItem == item)
-            {
-                e.Handled = true;
-            }
-
-            return;
-        }
-
-        preview.Focus();
-        Keyboard.Focus(preview);
-        CapturePreviewMouse(preview, item, "right down");
-        ForwardMouseToSource(item, preview, NativeMethods.WM_RBUTTONDOWN, NativeMethods.MK_RBUTTON, e.GetPosition(preview));
-        e.Handled = true;
-    }
-
-    private void PreviewSurface_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
-    {
-        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item)
-        {
-            return;
-        }
-
-        if (!item.IsInteractive)
-        {
-            if (item.IsZoomed || _pendingInteractiveItem == item)
-            {
-                e.Handled = true;
-            }
-
-            return;
-        }
-
-        ForwardMouseToSource(item, preview, NativeMethods.WM_RBUTTONUP, 0, e.GetPosition(preview));
-        ReleasePreviewMouseCapture(item, "right up");
-        e.Handled = true;
-    }
-
-    private void PreviewSurface_MouseLeave(object sender, MouseEventArgs e)
-    {
-        if (sender is FrameworkElement { Tag: ShelvedWindow item } &&
-            e.LeftButton != MouseButtonState.Pressed &&
-            e.RightButton != MouseButtonState.Pressed)
-        {
-            ReleasePreviewMouseCapture(item, "preview leave");
-        }
-    }
-
-    private void PreviewSurface_MouseMove(object sender, MouseEventArgs e)
-    {
-        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item || !item.IsInteractive)
-        {
-            return;
-        }
-
-        var keyState = 0;
-        if (e.LeftButton == MouseButtonState.Pressed)
-        {
-            keyState |= NativeMethods.MK_LBUTTON;
-        }
-
-        if (e.RightButton == MouseButtonState.Pressed)
-        {
-            keyState |= NativeMethods.MK_RBUTTON;
-        }
-
-        ForwardMouseToSource(item, preview, NativeMethods.WM_MOUSEMOVE, keyState, e.GetPosition(preview));
-        e.Handled = true;
-    }
-
     private void PreviewSurface_MouseWheel(object sender, MouseWheelEventArgs e)
     {
-        if (sender is not FrameworkElement preview || preview.Tag is not ShelvedWindow item)
+        if (sender is not FrameworkElement { Tag: ShelvedWindow item })
         {
-            return;
-        }
-
-        if (item.IsInteractive)
-        {
-            ForwardWheelToSource(item, e, preview);
             return;
         }
 
@@ -1125,102 +973,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 ActivateZoom(item);
             }
-
-            return;
-        }
-    }
-
-    private void PreviewSurface_KeyDown(object sender, KeyEventArgs e)
-    {
-        if (sender is FrameworkElement { Tag: ShelvedWindow item } && item.IsInteractive)
-        {
-            if (e.Key == Key.Escape)
+            else if (e.Delta < 0 && item.IsZoomed)
             {
                 DeactivateZoom(item);
-                e.Handled = true;
-                return;
             }
-
-            _shelver?.ForwardKeyInput(item, NativeMethods.WM_KEYDOWN, KeyInterop.VirtualKeyFromKey(e.Key == Key.System ? e.SystemKey : e.Key));
-            e.Handled = true;
-        }
-    }
-
-    private void PreviewSurface_KeyUp(object sender, KeyEventArgs e)
-    {
-        if (sender is FrameworkElement { Tag: ShelvedWindow item } && item.IsInteractive)
-        {
-            _shelver?.ForwardKeyInput(item, NativeMethods.WM_KEYUP, KeyInterop.VirtualKeyFromKey(e.Key == Key.System ? e.SystemKey : e.Key));
-            e.Handled = true;
-        }
-    }
-
-    private void PreviewSurface_TextInput(object sender, TextCompositionEventArgs e)
-    {
-        if (sender is not FrameworkElement { Tag: ShelvedWindow item } || !item.IsInteractive)
-        {
-            return;
-        }
-
-        foreach (var character in e.Text)
-        {
-            _shelver?.ForwardCharInput(item, character);
-        }
-
-        e.Handled = true;
-    }
-
-    private void PreviewSurface_RequestBringIntoView(object sender, RequestBringIntoViewEventArgs e)
-    {
-        if (sender is FrameworkElement { Tag: ShelvedWindow item } && item.IsZoomed)
-        {
-            e.Handled = true;
         }
     }
 
     private void PeekCollapseTimer_Tick(object? sender, EventArgs e)
     {
         _peekCollapseTimer.Stop();
-        ClearPeek();
-    }
-
-    private void InteractiveExitTimer_Tick(object? sender, EventArgs e)
-    {
-        if (_zoomedItem is not { IsInteractive: true } item)
-        {
-            _interactiveExitTimer.Stop();
-            return;
-        }
-
-        var bounds = GetPreviewScreenBounds(item);
-        if (bounds.Width > 0 && bounds.Height > 0)
-        {
-            _shelver?.UpdateInteractiveZoomBounds(item, bounds);
-        }
-
-        if (DateTime.UtcNow < _interactiveExitSuppressedUntilUtc)
-        {
-            return;
-        }
-
-        if (IsMouseOver || IsCursorInsidePreviewBounds(item))
-        {
-            return;
-        }
-
-        var foreground = NativeMethods.GetForegroundWindow();
-        if (foreground != IntPtr.Zero &&
-            foreground != _windowHandle &&
-            foreground != item.SourceHwnd)
-        {
-            Trace.WriteLine(
-                $"LiveShelf InteractiveMode exit card={item.Id} unrelatedForeground=0x{foreground.ToInt64():X}");
-            DeactivateZoom(item);
-            ClearPeek();
-            return;
-        }
-
-        DeactivateZoom(item);
         ClearPeek();
     }
 
@@ -1465,7 +1227,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (hidden)
         {
-            ReleaseAllPreviewMouseCapture("shelf hidden");
             ClearPeek();
         }
 
@@ -1538,12 +1299,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _peekedItem = null;
         if (_zoomedItem == item)
         {
-            CancelPendingInteractiveActivation();
-            ReleasePreviewMouseCapture(item, "forget peek");
-            _shelver?.EndInteractiveZoom(item);
             _zoomedItem = null;
             item.IsZoomed = false;
-            _interactiveExitTimer.Stop();
         }
     }
 
@@ -1551,11 +1308,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (_zoomedItem == item)
         {
-            CancelPendingInteractiveActivation();
-            ReleasePreviewMouseCapture(item, "card collapse");
-            _shelver?.EndInteractiveZoom(item);
             _zoomedItem = null;
-            _interactiveExitTimer.Stop();
         }
 
         item.IsExpanded = false;
@@ -1579,36 +1332,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (_zoomedItem == item)
         {
-            if (!item.IsInteractive && SupportsAutomaticInteractiveMode(item))
-            {
-                ScheduleInteractiveActivation(item);
-            }
-
             return;
         }
 
         _zoomedItem = item;
         item.IsZoomed = true;
         item.MarkAttentionSeen();
-        if (SupportsAutomaticInteractiveMode(item))
-        {
-            ScheduleInteractiveActivation(item);
-        }
-        else
-        {
-            CancelPendingInteractiveActivation();
-            StatusMessage = $"Previewing {item.ProcessName}";
-        }
+        StatusMessage = $"Previewing {item.ProcessName}";
 
         AnimatePreviewHeight(item, GetZoomPreviewHeight(), ZoomAnimationMs);
         if (_cardElements.TryGetValue(item, out var card))
         {
             AnimateCardTransform(card, scale: 1, offsetX: 0, ZoomAnimationMs);
-        }
-
-        if (SupportsAutomaticInteractiveMode(item))
-        {
-            StatusMessage = $"Zooming {item.ProcessName}";
         }
 
         PositionShelfWindow();
@@ -1622,12 +1357,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        CancelPendingInteractiveActivation();
-        ReleasePreviewMouseCapture(item, "zoom exit");
-        _shelver?.EndInteractiveZoom(item);
         _zoomedItem = null;
         item.IsZoomed = false;
-        _interactiveExitTimer.Stop();
         AnimatePreviewHeight(item, PeekPreviewHeight, ZoomAnimationMs);
 
         if (_cardElements.TryGetValue(item, out var card))
@@ -1638,59 +1369,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         StatusMessage = $"Peeking {item.ProcessName}";
         PositionShelfWindow();
         QueueThumbnailRefresh();
-    }
-
-    private void ScheduleInteractiveActivation(ShelvedWindow item)
-    {
-        if (!SupportsAutomaticInteractiveMode(item))
-        {
-            // Browser/media previews stay passive by default. The previous demotion/refocus guard could
-            // steal global focus and make clicks on other Windows surfaces feel blocked.
-            Trace.WriteLine(
-                $"LiveShelf InteractiveMode skipped card={item.Id} policy={item.SourceWindowPolicy}");
-            return;
-        }
-
-        var generation = ++_interactiveActivationGeneration;
-        _pendingInteractiveItem = item;
-        _interactiveExitSuppressedUntilUtc = DateTime.UtcNow.AddMilliseconds(InteractiveActivationDelayMs + 1200);
-        StatusMessage = $"Zooming {item.ProcessName}";
-        RefreshThumbnailsDuring(ZoomAnimationMs + 120);
-
-        RunAfter(InteractiveActivationDelayMs, () =>
-        {
-            if (generation != _interactiveActivationGeneration ||
-                _zoomedItem != item ||
-                !item.IsZoomed ||
-                item.IsInteractive ||
-                !item.IsSourceAlive)
-            {
-                return;
-            }
-
-            _shelver?.BeginInteractiveZoom(item, GetPreviewScreenBounds(item));
-            _pendingInteractiveItem = null;
-            _interactiveExitTimer.Start();
-            FocusPreview(item);
-            StatusMessage = $"Using {item.ProcessName}";
-            QueueThumbnailRefresh();
-        });
-    }
-
-    private static bool SupportsAutomaticInteractiveMode(ShelvedWindow item)
-    {
-        return SourceWindowPolicyRules.SupportsAutomaticInteractiveMode(item.SourceWindowPolicy);
-    }
-
-    private void CancelPendingInteractiveActivation()
-    {
-        _interactiveActivationGeneration++;
-        if (_pendingInteractiveItem is { } item)
-        {
-            _shelver?.CancelInteractivePreparation(item);
-        }
-
-        _pendingInteractiveItem = null;
     }
 
     private void EnsurePeek(ShelvedWindow item)
@@ -1772,12 +1450,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void AnimatePreviewHeight(ShelvedWindow item, double height, int durationMs)
     {
-        if (!_previewElements.TryGetValue(item, out var preview))
+        if (!_previewHostElements.TryGetValue(item, out var previewHost))
         {
             return;
         }
 
-        AnimateDouble(preview, FrameworkElement.HeightProperty, height, durationMs, QueueThumbnailRefresh);
+        AnimateDouble(previewHost, FrameworkElement.HeightProperty, height, durationMs, () =>
+        {
+            UpdatePreviewFrame(item);
+            QueueThumbnailRefresh();
+        });
         RefreshThumbnailsDuring(durationMs);
     }
 
@@ -1841,49 +1523,94 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         foreach (var item in Items)
         {
-            if (!TryGetPreviewBounds(item, out var thumbnailDestination, out var screenBounds))
+            UpdatePreviewFrame(item);
+            if (!TryGetPreviewBounds(item, out var thumbnailDestination))
             {
                 continue;
             }
 
             _shelver.UpdateThumbnailDestination(item, thumbnailDestination);
-            if (item.IsInteractive)
-            {
-                _shelver.UpdateInteractiveZoomBounds(item, screenBounds);
-            }
         }
     }
 
-    private NativeMethods.RECT GetPreviewScreenBounds(ShelvedWindow item)
+    private bool UpdatePreviewFrame(ShelvedWindow item)
     {
-        return TryGetPreviewBounds(item, out _, out var screenBounds)
-            ? screenBounds
-            : default;
-    }
-
-    private bool IsCursorInsidePreviewBounds(ShelvedWindow item)
-    {
-        if (!NativeMethods.GetCursorPos(out var point))
+        if (!_previewHostElements.TryGetValue(item, out var host) ||
+            !_previewElements.TryGetValue(item, out var surface) ||
+            host.ActualWidth <= 0 ||
+            host.ActualHeight <= 0)
         {
             return false;
         }
 
-        var bounds = GetPreviewScreenBounds(item);
-        return bounds.Width > 0 &&
-               bounds.Height > 0 &&
-               point.X >= bounds.Left &&
-               point.X <= bounds.Right &&
-               point.Y >= bounds.Top &&
-               point.Y <= bounds.Bottom;
+        var frameSize = ComputePreviewFrameSize(
+            host.ActualWidth,
+            host.ActualHeight,
+            GetPreviewSourceSize(item));
+        if (frameSize.Width <= 0 || frameSize.Height <= 0)
+        {
+            return false;
+        }
+
+        var changed = false;
+        if (double.IsNaN(surface.Width) || Math.Abs(surface.Width - frameSize.Width) > 0.5)
+        {
+            surface.Width = frameSize.Width;
+            changed = true;
+        }
+
+        if (double.IsNaN(surface.Height) || Math.Abs(surface.Height - frameSize.Height) > 0.5)
+        {
+            surface.Height = frameSize.Height;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private static Size ComputePreviewFrameSize(
+        double hostWidth,
+        double hostHeight,
+        NativeMethods.SIZE sourceSize)
+    {
+        if (hostWidth <= 0 || hostHeight <= 0)
+        {
+            return Size.Empty;
+        }
+
+        if (!DwmThumbnailLayout.HasUsableSourceSize(sourceSize))
+        {
+            return new Size(hostWidth, hostHeight);
+        }
+
+        var sourceRatio = sourceSize.Width / (double)sourceSize.Height;
+        var hostRatio = hostWidth / hostHeight;
+        return sourceRatio > hostRatio
+            ? new Size(hostWidth, Math.Max(1, hostWidth / sourceRatio))
+            : new Size(Math.Max(1, hostHeight * sourceRatio), hostHeight);
+    }
+
+    private static NativeMethods.SIZE GetPreviewSourceSize(ShelvedWindow item)
+    {
+        if (DwmThumbnailLayout.HasUsableSourceSize(item.LastThumbnailSourceSize))
+        {
+            return item.LastThumbnailSourceSize;
+        }
+
+        return item.OriginalSourceRect.Width > 0 && item.OriginalSourceRect.Height > 0
+            ? new NativeMethods.SIZE
+            {
+                Width = item.OriginalSourceRect.Width,
+                Height = item.OriginalSourceRect.Height
+            }
+            : default;
     }
 
     private bool TryGetPreviewBounds(
         ShelvedWindow item,
-        out NativeMethods.RECT thumbnailDestination,
-        out NativeMethods.RECT screenBounds)
+        out NativeMethods.RECT thumbnailDestination)
     {
         thumbnailDestination = default;
-        screenBounds = default;
 
         if (!_previewElements.TryGetValue(item, out var element) ||
             element.ActualWidth <= 0 ||
@@ -1915,15 +1642,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             (int)Math.Round(rootBottomRight.X),
             (int)Math.Round(rootBottomRight.Y));
 
-        var innerRect = GetPreviewThumbnailRect(element);
-        var screenTopLeft = element.PointToScreen(innerRect.TopLeft);
-        var screenBottomRight = element.PointToScreen(innerRect.BottomRight);
-        screenBounds = new NativeMethods.RECT(
-            (int)Math.Round(screenTopLeft.X),
-            (int)Math.Round(screenTopLeft.Y),
-            (int)Math.Round(screenBottomRight.X),
-            (int)Math.Round(screenBottomRight.Y));
-
         return true;
     }
 
@@ -1937,130 +1655,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             inset,
             Math.Max(0, element.ActualWidth - (inset * 2)),
             Math.Max(0, element.ActualHeight - (inset * 2)));
-    }
-
-    private void ForwardMouseToSource(
-        ShelvedWindow item,
-        FrameworkElement preview,
-        int message,
-        int keyState,
-        Point position)
-    {
-        var previewRect = GetPreviewThumbnailRect(preview);
-        if (!previewRect.Contains(position))
-        {
-            return;
-        }
-
-        _shelver?.ForwardMouseInput(
-            item,
-            message,
-            keyState | GetModifierKeyState(),
-            position.X - previewRect.Left,
-            position.Y - previewRect.Top,
-            previewRect.Width,
-            previewRect.Height);
-    }
-
-    private void ForwardWheelToSource(ShelvedWindow item, MouseWheelEventArgs e, FrameworkElement? preview = null)
-    {
-        preview ??= _previewElements.GetValueOrDefault(item);
-        if (preview is null)
-        {
-            return;
-        }
-
-        var position = e.GetPosition(preview);
-        var previewRect = GetPreviewThumbnailRect(preview);
-        if (!previewRect.Contains(position))
-        {
-            return;
-        }
-
-        var x = Math.Clamp(position.X - previewRect.Left, 0, Math.Max(0, previewRect.Width - 1));
-        var y = Math.Clamp(position.Y - previewRect.Top, 0, Math.Max(0, previewRect.Height - 1));
-        var screenPoint = preview.PointToScreen(new Point(x + previewRect.Left, y + previewRect.Top));
-
-        _shelver?.ForwardMouseInput(
-            item,
-            NativeMethods.WM_MOUSEWHEEL,
-            GetModifierKeyState(),
-            x,
-            y,
-            previewRect.Width,
-            previewRect.Height,
-            e.Delta,
-            screenPoint.X,
-            screenPoint.Y);
-        e.Handled = true;
-    }
-
-    private static void CapturePreviewMouse(FrameworkElement preview, ShelvedWindow item, string reason)
-    {
-        preview.CaptureMouse();
-        Trace.WriteLine(
-            $"LiveShelf capture acquired reason={reason} card={item.Id} owner={Mouse.Captured?.GetType().Name ?? "none"}");
-    }
-
-    private void ReleasePreviewMouseCapture(ShelvedWindow item, string reason)
-    {
-        _previewElements.TryGetValue(item, out var preview);
-        var owner = Mouse.Captured;
-        if (preview is not null && preview.IsMouseCaptured)
-        {
-            preview.ReleaseMouseCapture();
-        }
-        else if (owner is FrameworkElement element && ReferenceEquals(element.Tag, item))
-        {
-            element.ReleaseMouseCapture();
-        }
-        else if (owner is not null)
-        {
-            Trace.WriteLine(
-                $"LiveShelf capture owner retained reason={reason} card={item.Id} owner={owner.GetType().Name}");
-            return;
-        }
-
-        Trace.WriteLine(
-            $"LiveShelf capture released reason={reason} card={item.Id} owner={Mouse.Captured?.GetType().Name ?? "none"}");
-    }
-
-    private void ReleaseAllPreviewMouseCapture(string reason)
-    {
-        foreach (var item in _previewElements.Keys.ToArray())
-        {
-            ReleasePreviewMouseCapture(item, reason);
-        }
-    }
-
-    private void FocusPreview(ShelvedWindow item)
-    {
-        if (!_previewElements.TryGetValue(item, out var preview))
-        {
-            return;
-        }
-
-        Dispatcher.BeginInvoke(() =>
-        {
-            preview.Focus();
-            Keyboard.Focus(preview);
-        }, DispatcherPriority.Input);
-    }
-
-    private static int GetModifierKeyState()
-    {
-        var state = 0;
-        if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0)
-        {
-            state |= NativeMethods.MK_SHIFT;
-        }
-
-        if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
-        {
-            state |= NativeMethods.MK_CONTROL;
-        }
-
-        return state;
     }
 
     private void PositionShelfWindow(bool animate = true)

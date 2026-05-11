@@ -16,7 +16,7 @@ try
     }
 
     var normalized = NormalizeEvent(source, input);
-    var payload = normalized.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
+    var payload = normalized.ToJsonString();
 
     if (!await TrySendToLiveShelfAsync(payload))
     {
@@ -234,7 +234,7 @@ static void TryWriteDiagnostic(Exception exception)
         var path = Path.Combine(directory, "bridge-errors.log");
         File.AppendAllText(
             path,
-            $"{DateTimeOffset.UtcNow:O} {exception.GetType().Name}: {exception.Message}{Environment.NewLine}");
+            $"{DateTimeOffset.UtcNow:O} {exception}{Environment.NewLine}");
     }
     catch
     {

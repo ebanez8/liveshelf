@@ -42,7 +42,6 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     private bool _isExpanded;
     private bool _isZoomed;
     private bool _isSourceAlive = true;
-    private bool _isInteractive;
     private bool _isMediaCard;
     private bool _hasMediaProgress;
     private bool _canToggleMediaPlayback;
@@ -82,13 +81,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
     internal SourceWindowPolicy SourceWindowPolicy { get; private set; }
 
-    internal IntPtr LastInputTargetHwnd { get; set; }
-
     internal NativeMethods.RECT ParkedBounds { get; set; }
-
-    internal NativeMethods.RECT InteractiveBounds { get; set; }
-
-    internal bool IsPreparingInteractive { get; set; }
 
     internal int LivePreviewFailureCount { get; set; }
 
@@ -174,22 +167,6 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     }
 
     internal int LastContentHash { get; set; }
-
-    internal bool IsInteractive
-    {
-        get => _isInteractive;
-        set
-        {
-            if (_isInteractive == value)
-            {
-                return;
-            }
-
-            _isInteractive = value;
-            OnPropertyChanged(nameof(IsInteractive));
-            OnPropertyChanged(nameof(InteractionText));
-        }
-    }
 
     public ShelfBadgeKind BadgeKind
     {
@@ -504,8 +481,6 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
             OnPropertyChanged(nameof(MediaPlayPauseText));
         }
     }
-
-    public string InteractionText => IsInteractive ? "Exit" : "Use";
 
     public string ZoomText => IsZoomed ? "Max" : "Zoom";
 

@@ -101,15 +101,6 @@ AssertEqual(
     SourceWindowPolicy.Media,
     SourceWindowPolicyRules.Classify("vlc", isMediaCard: false));
 AssertTrue(
-    "normal source windows may still use automatic interactive mode",
-    SourceWindowPolicyRules.SupportsAutomaticInteractiveMode(SourceWindowPolicy.Normal));
-AssertTrue(
-    "browser cards must default to preview mode",
-    !SourceWindowPolicyRules.SupportsAutomaticInteractiveMode(SourceWindowPolicy.Browser));
-AssertTrue(
-    "media cards must default to preview mode",
-    !SourceWindowPolicyRules.SupportsAutomaticInteractiveMode(SourceWindowPolicy.Media));
-AssertTrue(
     "media cards must park their source windows offscreen",
     !SourceWindowPolicyRules.RequiresSourceSizePreservation(SourceWindowPolicy.Media));
 
@@ -129,20 +120,19 @@ AssertTrue(
     "live preview policy transition may move back to the original rect",
     (liveMoveToOriginalFlags & NativeMethods.SWP_NOMOVE) == 0);
 
-var liveInteractiveFlags = SourceWindowPolicyRules.GetLivePreviewInteractiveFlags();
-AssertTrue(
-    "live preview interactive positioning must preserve source width and height",
-    (liveInteractiveFlags & NativeMethods.SWP_NOSIZE) != 0);
-AssertTrue(
-    "live preview interactive positioning must preserve source location",
-    (liveInteractiveFlags & NativeMethods.SWP_NOMOVE) != 0);
-
 var host = new NativeMethods.RECT(0, 0, 200, 200);
 var wideSource = new NativeMethods.SIZE { Width = 1920, Height = 1080 };
 var contained = DwmThumbnailLayout.ComputeContainDestination(host, wideSource);
 AssertEqual("contain-fit should use full host width", 200, contained.Width);
 AssertIntBetween("contain-fit should preserve wide aspect ratio", contained.Height, 112, 114);
 AssertIntBetween("contain-fit should center vertically", contained.Top, 43, 44);
+
+var shortHost = new NativeMethods.RECT(0, 0, 240, 120);
+var tallSource = new NativeMethods.SIZE { Width = 900, Height = 1600 };
+var tallContained = DwmThumbnailLayout.ComputeContainDestination(shortHost, tallSource);
+AssertEqual("contain-fit should use full host height for tall sources", 120, tallContained.Height);
+AssertIntBetween("contain-fit should shrink tall source width", tallContained.Width, 67, 68);
+AssertIntBetween("contain-fit should center tall source horizontally", tallContained.Left, 86, 87);
 
 var originalBrowserRect = new NativeMethods.RECT(10, 20, 1610, 920);
 var tinySource = new NativeMethods.SIZE { Width = 320, Height = 180 };
@@ -200,6 +190,32 @@ AssertEqual(
     2,
     sourceOnlyUpdates.Count);
 
+var lateCards = new List<ShelvedWindow>();
+var lateSourceOnlyRegistry = new AgentSessionRegistry(() => lateCards);
+var lateSourceOnlyUpdates = new List<AgentCardUpdate>();
+lateSourceOnlyRegistry.CardUpdateRequested += (_, update) => lateSourceOnlyUpdates.Add(update);
+lateSourceOnlyRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "session-before-card",
+    EventName = "UserPromptSubmit"
+});
+var lateSourceOnlyCard = CreateShelvedCard(
+    "late - Codex",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 1201,
+    possibleCwd: @"C:\Users\Evan Z\Desktop\Coding\late");
+lateCards.Add(lateSourceOnlyCard);
+lateSourceOnlyRegistry.TryAutoLinkCard(lateSourceOnlyCard);
+AssertEqual(
+    "source-only prior Codex session should not auto-link a later shelved card",
+    0,
+    lateSourceOnlyUpdates.Count);
+AssertTrue(
+    "source-only prior Codex session should leave the later card unlinked",
+    !lateSourceOnlyCard.HasLinkedAgentSession);
+
 var cwdMatchCard = CreateShelvedCard(
     "stack - Codex",
     "WindowsTerminal",
@@ -226,6 +242,69 @@ AssertEqual(
     "unique cwd Codex match should auto-link the matching shelved card",
     cwdMatchCard.Id,
     cwdUpdates.Single().Card.Id);
+
+var titleCwdMatchCard = CreateShelvedCard(
+    "CCC",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 2251,
+    possibleCwd: string.Empty);
+var titleCwdRegistry = new AgentSessionRegistry(() => [titleCwdMatchCard]);
+var titleCwdUpdates = new List<AgentCardUpdate>();
+titleCwdRegistry.CardUpdateRequested += (_, update) => titleCwdUpdates.Add(update);
+titleCwdRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "session-title-cwd",
+    EventName = "UserPromptSubmit",
+    Cwd = @"C:\Users\Evan Z\Desktop\Coding\CCC"
+});
+AssertEqual(
+    "Codex cwd folder should auto-link a matching terminal title when exact card cwd is unavailable",
+    titleCwdMatchCard.Id,
+    titleCwdUpdates.Single().Card.Id);
+
+var processMatchCard = CreateShelvedCard(
+    "process - Codex",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 3301,
+    possibleCwd: string.Empty);
+var processRegistry = new AgentSessionRegistry(() => [processMatchCard]);
+var processUpdates = new List<AgentCardUpdate>();
+processRegistry.CardUpdateRequested += (_, update) => processUpdates.Add(update);
+processRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "session-process",
+    EventName = "UserPromptSubmit",
+    ParentProcessIds = [3301]
+});
+AssertEqual(
+    "unique process ancestry Codex match should auto-link the matching shelved card",
+    processMatchCard.Id,
+    processUpdates.Single().Card.Id);
+
+var foregroundMatchCard = CreateShelvedCard(
+    "foreground - Codex",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 4401,
+    possibleCwd: string.Empty);
+var foregroundRegistry = new AgentSessionRegistry(() => [foregroundMatchCard]);
+var foregroundUpdates = new List<AgentCardUpdate>();
+foregroundRegistry.CardUpdateRequested += (_, update) => foregroundUpdates.Add(update);
+foregroundRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "session-foreground",
+    EventName = "UserPromptSubmit",
+    ForegroundProcessId = 4401
+});
+AssertEqual(
+    "foreground process evidence should auto-link the matching shelved card",
+    foregroundMatchCard.Id,
+    foregroundUpdates.Single().Card.Id);
 
 var installerType = typeof(AgentHookInstaller);
 var ensureCodexHooksFeature = installerType.GetMethod(

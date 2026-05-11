@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -9,7 +10,8 @@ internal sealed class AgentSessionRegistry
     private const int AutoLinkScore = 80;
     private const int ProcessMatchScore = 100;
     private const int CwdMatchScore = 80;
-    private const int SourceMatchScore = 20;
+    private const int TitleCwdMatchScore = 80;
+    private const int SourceHintScore = 20;
     private const int ClearWinnerMargin = 20;
 
     private readonly Func<IReadOnlyList<ShelvedWindow>> _getCards;
@@ -38,6 +40,8 @@ internal sealed class AgentSessionRegistry
             : agentEvent.SessionId;
         if (!HasReliableSessionId(agentEvent, sessionId))
         {
+            Trace.WriteLine(
+                $"LiveShelf agent event ignored source={source} sessionId={sessionId} reason=unreliable-session-id cwd={agentEvent.Cwd}");
             return;
         }
 
@@ -85,7 +89,7 @@ internal sealed class AgentSessionRegistry
         var candidates = _sessionsByKey.Values
             .Where(session => string.IsNullOrWhiteSpace(session.LinkedCardId))
             .Where(session => DateTime.UtcNow - session.LastEventAtUtc < TimeSpan.FromHours(2))
-            .Select(session => new AgentSessionCandidate(session, ScoreAgentCardMatch(card, session)))
+            .Select(session => new AgentSessionCandidate(session, ScoreStrongAgentCardMatch(card, session)))
             .Where(candidate => candidate.Score > 0)
             .OrderByDescending(candidate => candidate.Score)
             .ToList();
@@ -129,30 +133,45 @@ internal sealed class AgentSessionRegistry
 
     private void TryAutoLinkSession(AgentSession session)
     {
-        var candidates = _getCards()
+        var strongCandidates = _getCards()
             .Where(card => !card.HasLinkedAgentSession)
-            .Select(card => new AgentCardCandidate(card, ScoreAgentCardMatch(card, session)))
+            .Select(card => new AgentCardCandidate(card, ScoreStrongAgentCardMatch(card, session)))
             .Where(candidate => candidate.Score > 0)
             .OrderByDescending(candidate => candidate.Score)
             .ToList();
 
-        if (TryChooseAutoLink(candidates, out var cardToLink))
+        if (TryChooseAutoLink(strongCandidates, out var cardToLink))
         {
             LinkSessionToCard(session, cardToLink);
             return;
         }
 
-        if (candidates.Count > 0)
+        var hintCandidates = _getCards()
+            .Where(card => !card.HasLinkedAgentSession)
+            .Select(card => new AgentCardCandidate(card, ScoreAgentCardHint(card, session)))
+            .Where(candidate => candidate.Score > 0)
+            .OrderByDescending(candidate => candidate.Score)
+            .ToList();
+
+        var promptCandidates = strongCandidates.Count > 0 ? strongCandidates : hintCandidates;
+        if (promptCandidates.Count > 0)
         {
+            Trace.WriteLine(
+                $"LiveShelf agent session needs manual link key={session.Key} strongCandidates={strongCandidates.Count} hintCandidates={hintCandidates.Count} cwd={session.Cwd} processIds={string.Join(',', session.RelatedProcessIds)}");
             if (_ambiguousPromptedKeys.Add(session.Key))
             {
                 AmbiguousLinkDetected?.Invoke(
                     this,
                     new AgentLinkAmbiguousEventArgs(
                         session,
-                        candidates.Take(2).ToArray()));
+                        promptCandidates.Take(2).ToArray()));
             }
+
+            return;
         }
+
+        Trace.WriteLine(
+            $"LiveShelf agent session unmatched key={session.Key} cwd={session.Cwd} processIds={string.Join(',', session.RelatedProcessIds)}");
     }
 
     private void ApplyLinkedCard(AgentSession session, ShelvedWindow card)
@@ -412,11 +431,7 @@ internal sealed class AgentSessionRegistry
             AddRelatedProcessId(session, processId);
         }
 
-        if (agentEvent.ForegroundProcessId == agentEvent.ProcessId ||
-            agentEvent.ParentProcessIds.Contains(agentEvent.ForegroundProcessId))
-        {
-            AddRelatedProcessId(session, agentEvent.ForegroundProcessId);
-        }
+        AddRelatedProcessId(session, agentEvent.ForegroundProcessId);
     }
 
     private static void AddRelatedProcessId(AgentSession session, int processId)
@@ -430,7 +445,7 @@ internal sealed class AgentSessionRegistry
     private static bool CardMatchesSessionProcess(ShelvedWindow card, AgentSession session) =>
         card.SourceProcessId > 0 && session.RelatedProcessIds.Contains(card.SourceProcessId);
 
-    private static int ScoreAgentCardMatch(ShelvedWindow card, AgentSession session)
+    private static int ScoreStrongAgentCardMatch(ShelvedWindow card, AgentSession session)
     {
         var score = 0;
         if (CardMatchesSessionProcess(card, session))
@@ -444,14 +459,18 @@ internal sealed class AgentSessionRegistry
         {
             score += CwdMatchScore;
         }
-
-        if (CardMatchesSessionSource(card, session.Source))
+        else if (!string.IsNullOrWhiteSpace(session.Cwd) &&
+                 TitleContainsCwdFolder(card.Title, session.Cwd) &&
+                 CardMatchesSessionSource(card, session.Source))
         {
-            score += SourceMatchScore;
+            score += TitleCwdMatchScore;
         }
 
         return score;
     }
+
+    private static int ScoreAgentCardHint(ShelvedWindow card, AgentSession session) =>
+        CardMatchesSessionSource(card, session.Source) ? SourceHintScore : 0;
 
     private static bool CardMatchesSessionSource(ShelvedWindow card, string source)
     {
@@ -529,6 +548,13 @@ internal sealed class AgentSessionRegistry
         }
 
         return true;
+    }
+
+    private static bool TitleContainsCwdFolder(string title, string cwd)
+    {
+        var folderName = Path.GetFileName(cwd.TrimEnd('\\', '/'));
+        return !string.IsNullOrWhiteSpace(folderName) &&
+               title.Contains(folderName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsPathProperty(string normalizedName)

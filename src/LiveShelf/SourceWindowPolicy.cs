@@ -26,16 +26,6 @@ internal static class SourceWindowPolicyRules
         return policy is SourceWindowPolicy.Browser;
     }
 
-    internal static bool KeepsLiveThumbnailVisibleWhenInteractive(SourceWindowPolicy policy)
-    {
-        return RequiresSourceSizePreservation(policy);
-    }
-
-    internal static bool SupportsAutomaticInteractiveMode(SourceWindowPolicy policy)
-    {
-        return policy is SourceWindowPolicy.Normal;
-    }
-
     internal static int GetLivePreviewParkFlags()
     {
         return NativeMethods.SWP_NOACTIVATE |
@@ -55,15 +45,6 @@ internal static class SourceWindowPolicyRules
         return NativeMethods.SWP_NOACTIVATE |
                NativeMethods.SWP_NOOWNERZORDER |
                NativeMethods.SWP_SHOWWINDOW;
-    }
-
-    internal static int GetLivePreviewInteractiveFlags()
-    {
-        return NativeMethods.SWP_NOACTIVATE |
-               NativeMethods.SWP_NOOWNERZORDER |
-               NativeMethods.SWP_SHOWWINDOW |
-               NativeMethods.SWP_NOMOVE |
-               NativeMethods.SWP_NOSIZE;
     }
 
     internal static bool IsBrowserProcess(string processName)
