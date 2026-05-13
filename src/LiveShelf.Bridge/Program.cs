@@ -3,20 +3,21 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization.Metadata;
 
 const string PipeName = "LiveShelfAgentEvents";
 
 try
 {
     var source = ReadSource(args);
-    var input = await Console.In.ReadToEndAsync();
+    var input = await TryReadStdinAsync();
     if (string.IsNullOrWhiteSpace(input))
     {
         input = ReadPayloadArgument(args);
     }
 
     var normalized = NormalizeEvent(source, input);
-    var payload = normalized.ToJsonString();
+    var payload = normalized.ToJsonString(BridgeJsonOptions.Value);
 
     if (!await TrySendToLiveShelfAsync(payload))
     {
@@ -26,9 +27,47 @@ try
 catch (Exception ex)
 {
     TryWriteDiagnostic(ex);
+    try
+    {
+        // Best-effort: queue whatever partial data we have so events aren't silently lost.
+        var fallback = new JsonObject
+        {
+            ["source"] = ReadSource(args),
+            ["eventName"] = "BridgeError",
+            ["error"] = ex.Message,
+            ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        };
+        QueueEvent(fallback.ToJsonString(BridgeJsonOptions.Value));
+    }
+    catch
+    {
+        // Absolutely nothing we can do here — swallow.
+    }
 }
 
 Environment.ExitCode = 0;
+
+static async Task<string> TryReadStdinAsync()
+{
+    if (!Console.IsInputRedirected)
+    {
+        return string.Empty;
+    }
+
+    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+    try
+    {
+        return await Console.In.ReadToEndAsync(cts.Token);
+    }
+    catch (OperationCanceledException)
+    {
+        return string.Empty;
+    }
+    catch (IOException)
+    {
+        return string.Empty;
+    }
+}
 
 static string ReadSource(string[] args)
 {
@@ -118,7 +157,7 @@ static JsonArray ToJsonArray(IEnumerable<int> values)
 static IReadOnlyList<int> GetParentProcessIds(int processId)
 {
     var result = new List<int>();
-    var seen = new HashSet<int>();
+    var seen = new HashSet<int> { processId };
     var current = processId;
     for (var depth = 0; depth < 16; depth++)
     {
@@ -179,7 +218,7 @@ static async Task<bool> TrySendToLiveShelfAsync(string payload)
     try
     {
         await using var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.Out, PipeOptions.Asynchronous);
-        await pipe.ConnectAsync(300);
+        await pipe.ConnectAsync(1500);
         await using var writer = new StreamWriter(pipe);
         await writer.WriteLineAsync(payload);
         await writer.FlushAsync();
@@ -377,7 +416,7 @@ static string? NodeToString(JsonNode? node)
             return string.IsNullOrWhiteSpace(text) ? null : text;
         }
 
-        var serializedValue = value.ToJsonString();
+        var serializedValue = value.ToJsonString(BridgeJsonOptions.Value);
         return string.IsNullOrWhiteSpace(serializedValue) || serializedValue == "null" ? null : serializedValue;
     }
 
@@ -429,4 +468,13 @@ struct PROCESS_BASIC_INFORMATION
     public IntPtr Reserved2B;
     public IntPtr UniqueProcessId;
     public IntPtr InheritedFromUniqueProcessId;
+}
+
+static class BridgeJsonOptions
+{
+    public static readonly JsonSerializerOptions Value = new()
+    {
+        TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
+        WriteIndented = false
+    };
 }

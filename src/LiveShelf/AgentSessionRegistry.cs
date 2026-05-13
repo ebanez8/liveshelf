@@ -40,6 +40,11 @@ internal sealed class AgentSessionRegistry
             : agentEvent.SessionId;
         if (!HasReliableSessionId(agentEvent, sessionId))
         {
+            if (TryApplySessionlessLifecycle(source, agentEvent))
+            {
+                return;
+            }
+
             Trace.WriteLine(
                 $"LiveShelf agent event ignored source={source} sessionId={sessionId} reason=unreliable-session-id cwd={agentEvent.Cwd}");
             return;
@@ -77,6 +82,84 @@ internal sealed class AgentSessionRegistry
         }
 
         TryAutoLinkSession(session);
+    }
+
+    /// <summary>
+    /// Periodically called by the monitor timer to detect sessions that have gone
+    /// stale (e.g. agent was rate-limited or crashed without sending Stop/StopFailure).
+    /// Re-evaluates linked cards so the badge transitions from "Working" to "Stalled".
+    /// </summary>
+    public void SweepStaleSessions()
+    {
+        foreach (var session in _sessionsByKey.Values)
+        {
+            if (!IsSessionStale(session) || string.IsNullOrWhiteSpace(session.LinkedCardId))
+            {
+                continue;
+            }
+
+            var linkedCard = _getCards().FirstOrDefault(card =>
+                card.Id == session.LinkedCardId &&
+                string.Equals(card.LinkedAgentKey, session.Key, StringComparison.OrdinalIgnoreCase));
+            if (linkedCard is not null)
+            {
+                ApplyLinkedCard(session, linkedCard);
+            }
+        }
+    }
+
+    private bool TryApplySessionlessLifecycle(string source, AgentEvent agentEvent)
+    {
+        var eventName = NormalizeEventName(agentEvent.EffectiveEventName);
+        var nextStatus = eventName switch
+        {
+            "agentturncomplete" or "turncomplete" or "taskcompleted" or "stop" => AgentSessionStatus.Done,
+            "approvalrequest" or "agentapprovalrequest" => AgentSessionStatus.Waiting,
+            "stopfailure" => AgentSessionStatus.Failed,
+            _ => (AgentSessionStatus?)null
+        };
+
+        if (nextStatus is null)
+        {
+            return false;
+        }
+
+        var session = _sessionsByKey.Values
+            .Where(candidate => string.Equals(candidate.Source, source, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(candidate => candidate.LastEventAtUtc)
+            .FirstOrDefault();
+
+        if (session is null)
+        {
+            return false;
+        }
+
+        var now = agentEvent.Timestamp > 0 ? agentEvent.TimestampUtc : DateTime.UtcNow;
+        session.Status = nextStatus.Value;
+        session.LastEventAtUtc = now;
+        if (nextStatus.Value is AgentSessionStatus.Done or AgentSessionStatus.Failed)
+        {
+            session.LastStopAtUtc = now;
+        }
+
+        if (string.IsNullOrWhiteSpace(session.LinkedCardId))
+        {
+            return true;
+        }
+
+        var linkedCard = _getCards().FirstOrDefault(card =>
+            card.Id == session.LinkedCardId &&
+            string.Equals(card.LinkedAgentKey, session.Key, StringComparison.OrdinalIgnoreCase));
+        if (linkedCard is not null)
+        {
+            ApplyLinkedCard(session, linkedCard);
+        }
+        else
+        {
+            session.LinkedCardId = string.Empty;
+        }
+
+        return true;
     }
 
     public void TryAutoLinkCard(ShelvedWindow card)
@@ -197,6 +280,16 @@ internal sealed class AgentSessionRegistry
 
     private static AgentBadge ComputeAgentBadge(AgentSession session)
     {
+        // Detect sessions stuck in active states without receiving events.
+        // This handles rate-limit and crash scenarios where the agent dies
+        // without sending a Stop or StopFailure event.
+        if (IsSessionStale(session))
+        {
+            session.Status = AgentSessionStatus.Failed;
+            session.LastStopAtUtc = session.LastEventAtUtc;
+            return new AgentBadge(ShelfBadgeKind.Failed, "Stalled", "No response from agent", true);
+        }
+
         return session.Status switch
         {
             AgentSessionStatus.Failed => new AgentBadge(ShelfBadgeKind.Failed, "Failed", BuildFailureDetail(session), true),
@@ -207,6 +300,20 @@ internal sealed class AgentSessionRegistry
             AgentSessionStatus.Idle => new AgentBadge(ShelfBadgeKind.Running, "Idle", string.Empty, false),
             _ => new AgentBadge(ShelfBadgeKind.Running, "Working", string.Empty, false)
         };
+    }
+
+    private static bool IsSessionStale(AgentSession session)
+    {
+        // Only active (in-progress) states can become stale.
+        if (session.Status is not (AgentSessionStatus.Working or
+            AgentSessionStatus.Editing or
+            AgentSessionStatus.RunningCommand))
+        {
+            return false;
+        }
+
+        var timeSinceLastEvent = DateTime.UtcNow - session.LastEventAtUtc;
+        return timeSinceLastEvent > TimeSpan.FromMinutes(2);
     }
 
     private static AgentBadge BuildDoneBadge(AgentSession session)
@@ -291,8 +398,15 @@ internal sealed class AgentSessionRegistry
 
             case "stop":
             case "taskcompleted":
+            case "agentturncomplete":
+            case "turncomplete":
                 session.Status = AgentSessionStatus.Done;
                 session.LastStopAtUtc = session.LastEventAtUtc;
+                break;
+
+            case "approvalrequest":
+            case "agentapprovalrequest":
+                session.Status = AgentSessionStatus.Waiting;
                 break;
 
             case "stopfailure":

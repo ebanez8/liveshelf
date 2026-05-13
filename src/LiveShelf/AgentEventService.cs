@@ -13,13 +13,22 @@ internal sealed class AgentEventService : IDisposable
         PropertyNameCaseInsensitive = true
     };
 
+    private static readonly TimeSpan QueueDrainInterval = TimeSpan.FromSeconds(15);
+
     private readonly CancellationTokenSource _cancellation = new();
     private readonly Task _listenerTask;
+    private readonly Timer _queueDrainTimer;
+    private int _drainInProgress;
     private bool _isDisposed;
 
     public AgentEventService()
     {
         _listenerTask = Task.Run(() => ListenAsync(_cancellation.Token));
+        _queueDrainTimer = new Timer(
+            _ => PublishQueuedEvents(),
+            state: null,
+            dueTime: QueueDrainInterval,
+            period: QueueDrainInterval);
     }
 
     public event EventHandler<AgentEvent>? EventReceived;
@@ -39,6 +48,7 @@ internal sealed class AgentEventService : IDisposable
 
         _isDisposed = true;
         _cancellation.Cancel();
+        _queueDrainTimer.Dispose();
 
         try
         {
@@ -58,9 +68,10 @@ internal sealed class AgentEventService : IDisposable
     {
         while (!cancellationToken.IsCancellationRequested)
         {
+            NamedPipeServerStream? pipe = null;
             try
             {
-                await using var pipe = new NamedPipeServerStream(
+                pipe = new NamedPipeServerStream(
                     PipeName,
                     PipeDirection.In,
                     NamedPipeServerStream.MaxAllowedServerInstances,
@@ -68,58 +79,100 @@ internal sealed class AgentEventService : IDisposable
                     PipeOptions.Asynchronous);
 
                 await pipe.WaitForConnectionAsync(cancellationToken);
-
-                using var reader = new StreamReader(pipe);
-                while (!cancellationToken.IsCancellationRequested)
-                {
-                    var line = await reader.ReadLineAsync(cancellationToken);
-                    if (line is null)
-                    {
-                        break;
-                    }
-
-                    PublishPayload(line);
-                }
             }
             catch (OperationCanceledException)
             {
+                pipe?.Dispose();
                 break;
             }
             catch (IOException)
             {
+                pipe?.Dispose();
+                continue;
             }
             catch (UnauthorizedAccessException)
             {
+                pipe?.Dispose();
+                continue;
             }
+
+            var connectedPipe = pipe;
+            _ = Task.Run(() => HandleClientAsync(connectedPipe, cancellationToken), cancellationToken);
+            _ = Task.Run(PublishQueuedEvents, cancellationToken);
+        }
+    }
+
+    private async Task HandleClientAsync(NamedPipeServerStream pipe, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var reader = new StreamReader(pipe);
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var line = await reader.ReadLineAsync(cancellationToken);
+                if (line is null)
+                {
+                    break;
+                }
+
+                PublishPayload(line);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+        catch (Exception ex)
+        {
+            CrashLogger.Log(ex);
         }
     }
 
     public void PublishQueuedEvents()
     {
-        var path = QueueFilePath;
-        if (!File.Exists(path))
+        if (Interlocked.Exchange(ref _drainInProgress, 1) == 1)
         {
             return;
         }
 
-        string[] lines;
         try
         {
-            lines = File.ReadAllLines(path);
-            File.Delete(path);
-        }
-        catch (IOException)
-        {
-            return;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return;
-        }
+            var path = QueueFilePath;
+            if (!File.Exists(path))
+            {
+                return;
+            }
 
-        foreach (var line in lines)
+            var tempPath = $"{path}.draining-{Guid.NewGuid():N}";
+            string[] lines;
+            try
+            {
+                File.Move(path, tempPath);
+                lines = File.ReadAllLines(tempPath);
+                File.Delete(tempPath);
+            }
+            catch (IOException)
+            {
+                return;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return;
+            }
+
+            foreach (var line in lines)
+            {
+                PublishPayload(line);
+            }
+        }
+        finally
         {
-            PublishPayload(line);
+            Interlocked.Exchange(ref _drainInProgress, 0);
         }
     }
 

@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Brush = System.Windows.Media.Brush;
 using Brushes = System.Windows.Media.Brushes;
 using Color = System.Windows.Media.Color;
@@ -34,6 +35,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     private string _suspectedAgent = string.Empty;
     private string _agentDisplayTitle = string.Empty;
     private string _exePath = string.Empty;
+    private ImageSource? _appIcon;
     private string _mediaPlayPauseText = "Play";
     private string _previewStatusReason = string.Empty;
     private double _mediaProgressPercent;
@@ -163,8 +165,28 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     internal string ExePath
     {
         get => _exePath;
-        set => _exePath = value;
+        set
+        {
+            _exePath = value;
+            _appIcon = null;
+            OnPropertyChanged(nameof(AppIcon));
+        }
     }
+
+    public ImageSource? AppIcon
+    {
+        get
+        {
+            _appIcon ??= AppIconExtractor.Extract(_exePath);
+            return _appIcon;
+        }
+    }
+
+    public Brush BadgeDotBrush => BadgeKind switch
+    {
+        ShelfBadgeKind.None => StatusBrush,
+        _ => BadgeBrush
+    };
 
     internal int LastContentHash { get; set; }
 
@@ -180,6 +202,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
             _badgeKind = value;
             OnPropertyChanged(nameof(BadgeKind));
+            OnPropertyChanged(nameof(BadgeDotBrush));
         }
     }
 
@@ -252,6 +275,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
             OnPropertyChanged(nameof(IsSourceAlive));
             OnPropertyChanged(nameof(StatusBrush));
             OnPropertyChanged(nameof(ClosedOverlayVisibility));
+            OnPropertyChanged(nameof(BadgeDotBrush));
         }
     }
 
@@ -293,6 +317,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
             _badgeBrush = value;
             OnPropertyChanged(nameof(BadgeBrush));
+            OnPropertyChanged(nameof(BadgeDotBrush));
         }
     }
 
