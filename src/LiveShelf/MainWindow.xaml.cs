@@ -37,6 +37,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const double ShelfWidth = 256;
     private const double PeekShelfWidth = 440;
     private const double ZoomShelfWidth = 780;
+    private const double RailWidth = 48;
     private const double HiddenOffset = 18;
     private const double CollapsedPreviewHeight = 92;
     private const double PeekPreviewHeight = 248;
@@ -51,6 +52,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const int DragShelfDwellMs = 420;
     private const int DragShelfHotZoneSize = 120;
     private const int DragShelfTitleBandHeight = 96;
+    private const int RailCollapseDelayMs = 3000;
+    private const int RailAnimationMs = 300;
     private const double ThumbnailFrameInsetDip = 2;
 
     private static readonly Color CardBackgroundColor = Color.FromArgb(110, 43, 48, 56);
@@ -68,6 +71,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly Dictionary<ShelvedWindow, FrameworkElement> _previewElements = [];
     private readonly DispatcherTimer _peekCollapseTimer;
     private readonly DispatcherTimer _dragShelfTimer;
+    private readonly DispatcherTimer _railCollapseTimer;
     private HwndSource? _source;
     private IntPtr _windowHandle;
     private WindowShelver? _shelver;
@@ -85,6 +89,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private Point _cardDragStartPoint;
     private ShelvedWindow? _cardDragItem;
     private bool _isReorderingCards;
+    private bool _isRailMode;
     private DateTime _lastHitTestLogUtc = DateTime.MinValue;
     private string _lastHitTestLogKey = string.Empty;
     private string _statusMessage = "Ready";
@@ -109,6 +114,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Interval = TimeSpan.FromMilliseconds(DragShelfPollMs)
         };
         _dragShelfTimer.Tick += DragShelfTimer_Tick;
+
+        _railCollapseTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(RailCollapseDelayMs)
+        };
+        _railCollapseTimer.Tick += RailCollapseTimer_Tick;
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -232,6 +243,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _peekCollapseTimer.Stop();
             _peekCollapseTimer.Start();
         }
+
+        if (!_isRailMode && !_isShelfHidden && Items.Count > 0)
+        {
+            _railCollapseTimer.Stop();
+            _railCollapseTimer.Start();
+        }
     }
 
     private void Items_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -292,7 +309,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool IsPointInsideShelfHitRegion(int screenX, int screenY, out string hitArea)
     {
         hitArea = "outside";
-        if (!ShouldShowShelf || RootSurface is null)
+        if ((!ShouldShowShelf && !ShouldShowRail) || RootSurface is null)
         {
             hitArea = "hidden";
             return false;
@@ -332,6 +349,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (FindAncestorWithName(hitObject, "StatusSurface") is not null)
         {
             hitArea = "status";
+            return true;
+        }
+
+        if (FindAncestorWithName(hitObject, "RailSurface") is not null)
+        {
+            hitArea = "rail";
             return true;
         }
 
@@ -1614,10 +1637,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        var shouldShowShelf = ShouldShowShelf;
+        var shouldShowShelf = ShouldShowShelf || ShouldShowRail;
         RootSurface.IsHitTestVisible = shouldShowShelf;
 
-        if (shouldShowShelf)
+        if (shouldShowShelf && !_isRailMode)
         {
             _shelver?.SetThumbnailsVisible(true);
         }
@@ -1664,8 +1687,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private bool ShouldShowShelf => Items.Count > 0 && !_isShelfHidden;
 
+    private bool ShouldShowRail => Items.Count > 0 && _isRailMode && !_isShelfHidden;
+
     private double GetTargetShelfWidth()
     {
+        if (_isRailMode)
+        {
+            return RailWidth;
+        }
+
         if (_zoomedItem is not null && !_isShelfHidden)
         {
             return Math.Min(ZoomShelfWidth, Math.Max(ShelfWidth, SystemParameters.VirtualScreenWidth - 24));
@@ -1835,6 +1865,71 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         return item;
+    }
+
+    public Visibility FullShelfVisibility => _isRailMode ? Visibility.Collapsed : Visibility.Visible;
+
+    public Visibility RailVisibility => ShouldShowRail ? Visibility.Visible : Visibility.Collapsed;
+
+    private void RailCollapseTimer_Tick(object? sender, EventArgs e)
+    {
+        _railCollapseTimer.Stop();
+        if (_isShelfHidden || Items.Count == 0 || IsMouseOver)
+        {
+            return;
+        }
+
+        CollapseToRail();
+    }
+
+    private void CollapseToRail()
+    {
+        if (_isRailMode)
+        {
+            return;
+        }
+
+        ClearPeek();
+        _isRailMode = true;
+        OnPropertyChanged(nameof(FullShelfVisibility));
+        OnPropertyChanged(nameof(RailVisibility));
+        _shelver?.SetThumbnailsVisible(false);
+        AnimateDouble(this, FrameworkElement.WidthProperty, RailWidth, RailAnimationMs);
+        var right = SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth;
+        AnimateDouble(this, Window.LeftProperty, right - RailWidth, RailAnimationMs);
+    }
+
+    private void ExpandFromRail()
+    {
+        if (!_isRailMode)
+        {
+            return;
+        }
+
+        _railCollapseTimer.Stop();
+        _isRailMode = false;
+        OnPropertyChanged(nameof(FullShelfVisibility));
+        OnPropertyChanged(nameof(RailVisibility));
+        _shelver?.SetThumbnailsVisible(true);
+        var targetWidth = GetTargetShelfWidth();
+        var right = SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth;
+        AnimateDouble(this, FrameworkElement.WidthProperty, targetWidth, RailAnimationMs);
+        AnimateDouble(this, Window.LeftProperty, right - targetWidth, RailAnimationMs);
+        RefreshThumbnailsDuring(RailAnimationMs);
+    }
+
+    private void RailSurface_MouseEnter(object sender, MouseEventArgs e)
+    {
+        _railCollapseTimer.Stop();
+        ExpandFromRail();
+    }
+
+    private void RailIcon_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: ShelvedWindow item })
+        {
+            _shelver?.Restore(item);
+        }
     }
 
     private void OnPropertyChanged(string propertyName)

@@ -33,6 +33,8 @@
              Link="AgentSessionRegistry.cs" />
     <Compile Include="..\..\src\LiveShelf\ShelvedWindow.cs"
              Link="ShelvedWindow.cs" />
+    <Compile Include="..\..\src\LiveShelf\AppIconExtractor.cs"
+             Link="AppIconExtractor.cs" />
   </ItemGroup>
 
 </Project>

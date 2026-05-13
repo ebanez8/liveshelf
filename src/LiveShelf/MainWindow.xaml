@@ -214,7 +214,8 @@
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <DockPanel x:Name="HeaderSurface" Grid.Row="0" Margin="10,10,10,7" LastChildFill="False">
+            <DockPanel x:Name="HeaderSurface" Grid.Row="0" Margin="10,10,10,7" LastChildFill="False"
+                       Visibility="{Binding FullShelfVisibility}">
                 <TextBlock Text="Live Shelf"
                            FontSize="12"
                            FontWeight="SemiBold"
@@ -291,7 +292,8 @@
                           Margin="7,0,7,7"
                           VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled"
-                          CanContentScroll="False">
+                          CanContentScroll="False"
+                          Visibility="{Binding FullShelfVisibility}">
                 <ItemsControl ItemsSource="{Binding Items}">
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
@@ -579,7 +581,59 @@
                        Margin="10,0,10,10"
                        Foreground="{StaticResource TextMuted}"
                        FontSize="10"
-                       TextTrimming="CharacterEllipsis"/>
+                       TextTrimming="CharacterEllipsis"
+                       Visibility="{Binding FullShelfVisibility}"/>
+
+            <!-- Collapsed Rail (icon strip) -->
+            <Border x:Name="RailSurface"
+                    Grid.Row="0" Grid.RowSpan="3"
+                    Width="48"
+                    HorizontalAlignment="Right"
+                    CornerRadius="24,0,0,24"
+                    Padding="0,14"
+                    Visibility="{Binding RailVisibility}"
+                    MouseEnter="RailSurface_MouseEnter">
+                <Border.Background>
+                    <SolidColorBrush Color="#40202428"/>
+                </Border.Background>
+                <Border.BorderBrush>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                        <GradientStop Color="#30FFFFFF" Offset="0"/>
+                        <GradientStop Color="#10FFFFFF" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.BorderBrush>
+                <Border.BorderThickness>
+                    <Thickness>1,0,0,0</Thickness>
+                </Border.BorderThickness>
+                <ItemsControl ItemsSource="{Binding Items}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Width="36" Height="36" Margin="0,2"
+                                  Cursor="Hand"
+                                  ToolTip="{Binding CardTitle}"
+                                  Tag="{Binding}"
+                                  MouseLeftButtonUp="RailIcon_MouseLeftButtonUp">
+                                <Border CornerRadius="8"
+                                        Background="#18FFFFFF"
+                                        Width="32" Height="32">
+                                    <Image Source="{Binding AppIcon}"
+                                           Width="22" Height="22"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                                </Border>
+                                <Ellipse Width="9" Height="9"
+                                         Fill="{Binding BadgeDotBrush}"
+                                         Stroke="#20000000"
+                                         StrokeThickness="1.5"
+                                         HorizontalAlignment="Right"
+                                         VerticalAlignment="Bottom"
+                                         Margin="0,0,3,3"/>
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </Border>
         </Grid>
     </Border>
 </Window>

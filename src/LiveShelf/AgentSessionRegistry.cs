@@ -313,7 +313,7 @@ internal sealed class AgentSessionRegistry
         }
 
         var timeSinceLastEvent = DateTime.UtcNow - session.LastEventAtUtc;
-        return timeSinceLastEvent > TimeSpan.FromMinutes(5);
+        return timeSinceLastEvent > TimeSpan.FromMinutes(2);
     }
 
     private static AgentBadge BuildDoneBadge(AgentSession session)
