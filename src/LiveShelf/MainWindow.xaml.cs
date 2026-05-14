@@ -39,6 +39,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const double ZoomShelfWidth = 780;
     private const double RailWidth = 48;
     private const double HiddenOffset = 18;
+    private const double ShelfCornerRadius = 12;
     private const double CollapsedPreviewHeight = 92;
     private const double PeekPreviewHeight = 248;
     private const double ZoomPreviewHeight = 560;
@@ -59,6 +60,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const int RailCollapseDelayMs = 1500;
     private const int RailCollapseAnimationMs = 520;
     private const int RailExpandAnimationMs = 260;
+    private const int FullShelfFadeAnimationMs = 180;
     private const double ThumbnailFrameInsetDip = 2;
 
     private static readonly Color CardBackgroundColor = Color.FromArgb(110, 43, 48, 56);
@@ -101,6 +103,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private int _liveReorderDropIndex = -1;
     private DateTime _lastDragThumbnailRefreshUtc = DateTime.MinValue;
     private bool _isRailMode;
+    private bool _isRailTransitioning;
     private DateTime _lastHitTestLogUtc = DateTime.MinValue;
     private string _lastHitTestLogKey = string.Empty;
     private string _statusMessage = "Ready";
@@ -196,6 +199,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         RefreshAgentConnectionStatus();
         RegisterHotkeys();
         PositionShelfWindow(animate: false);
+        ApplyRoundedWindowRegion();
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -231,6 +235,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
     {
+        ApplyRoundedWindowRegion();
         QueueThumbnailRefresh();
     }
 
@@ -1882,6 +1887,58 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Math.Max(0, element.ActualHeight - (inset * 2)));
     }
 
+    private void ApplyRoundedWindowRegion()
+    {
+        if (_windowHandle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var width = ActualWidth > 0 ? ActualWidth : Width;
+        var height = ActualHeight > 0 ? ActualHeight : Height;
+        if (width <= 0 || height <= 0)
+        {
+            return;
+        }
+
+        var source = PresentationSource.FromVisual(this);
+        var toDevice = source?.CompositionTarget?.TransformToDevice ?? Matrix.Identity;
+        var bottomRight = toDevice.Transform(new Point(width, height));
+        var radius = toDevice.Transform(new Point(ShelfCornerRadius * 2, ShelfCornerRadius * 2));
+
+        var widthPx = Math.Max(1, (int)Math.Ceiling(bottomRight.X));
+        var heightPx = Math.Max(1, (int)Math.Ceiling(bottomRight.Y));
+        var radiusPx = Math.Max(1, (int)Math.Round(radius.X));
+
+        var region = NativeMethods.CreateRoundRectRgn(
+            0,
+            0,
+            widthPx,
+            heightPx,
+            radiusPx,
+            Math.Max(1, (int)Math.Round(radius.Y)));
+        if (region == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var squareRightSide = NativeMethods.CreateRectRgn(
+            Math.Max(0, radiusPx / 2),
+            0,
+            widthPx,
+            heightPx);
+        if (squareRightSide != IntPtr.Zero)
+        {
+            NativeMethods.CombineRgn(region, region, squareRightSide, NativeMethods.RGN_OR);
+            NativeMethods.DeleteObject(squareRightSide);
+        }
+
+        if (NativeMethods.SetWindowRgn(_windowHandle, region, true) == 0)
+        {
+            NativeMethods.DeleteObject(region);
+        }
+    }
+
     private void PositionShelfWindow(bool animate = true)
     {
         if (_windowHandle == IntPtr.Zero)
@@ -2119,9 +2176,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return item;
     }
 
-    public Visibility FullShelfVisibility => _isRailMode ? Visibility.Collapsed : Visibility.Visible;
+    public Visibility FullShelfVisibility => !_isRailMode || _isRailTransitioning
+        ? Visibility.Visible
+        : Visibility.Collapsed;
 
-    public Visibility RailVisibility => ShouldShowRail ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility RailVisibility => ShouldShowRail || _isRailTransitioning
+        ? Visibility.Visible
+        : Visibility.Collapsed;
 
     private void ScheduleRailCollapseIfIdle()
     {
@@ -2152,31 +2213,43 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void CollapseToRail()
     {
-        if (_isRailMode)
+        if (_isRailMode || _isRailTransitioning)
         {
             return;
         }
 
         ClearPeekForRailCollapse();
+        _isRailTransitioning = true;
         PrepareRailEntrance();
-        _isRailMode = true;
         OnPropertyChanged(nameof(FullShelfVisibility));
         OnPropertyChanged(nameof(RailVisibility));
         _shelver?.SetThumbnailsVisible(false);
+        SetFullShelfOpacity(1);
+        AnimateFullShelfOpacity(0, FullShelfFadeAnimationMs);
         AnimateDouble(this, FrameworkElement.WidthProperty, RailWidth, RailCollapseAnimationMs);
         var right = SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth;
-        AnimateDouble(this, Window.LeftProperty, right - RailWidth, RailCollapseAnimationMs);
+        AnimateDouble(this, Window.LeftProperty, right - RailWidth, RailCollapseAnimationMs, () =>
+        {
+            _isRailMode = true;
+            _isRailTransitioning = false;
+            SetFullShelfOpacity(1);
+            OnPropertyChanged(nameof(FullShelfVisibility));
+            OnPropertyChanged(nameof(RailVisibility));
+            ApplyRoundedWindowRegion();
+        });
         AnimateRailEntrance();
     }
 
     private void ExpandFromRail()
     {
-        if (!_isRailMode)
+        if (!_isRailMode || _isRailTransitioning)
         {
             return;
         }
 
         _railCollapseTimer.Stop();
+        _isRailTransitioning = true;
+        SetFullShelfOpacity(0);
         AnimateRailExit();
         _isRailMode = false;
         OnPropertyChanged(nameof(FullShelfVisibility));
@@ -2185,8 +2258,51 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var targetWidth = GetTargetShelfWidth();
         var right = SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth;
         AnimateDouble(this, FrameworkElement.WidthProperty, targetWidth, RailExpandAnimationMs);
-        AnimateDouble(this, Window.LeftProperty, right - targetWidth, RailExpandAnimationMs);
+        AnimateDouble(this, Window.LeftProperty, right - targetWidth, RailExpandAnimationMs, () =>
+        {
+            _isRailTransitioning = false;
+            OnPropertyChanged(nameof(FullShelfVisibility));
+            OnPropertyChanged(nameof(RailVisibility));
+            ApplyRoundedWindowRegion();
+        });
+        AnimateFullShelfOpacity(1, RailExpandAnimationMs);
         RefreshThumbnailsDuring(RailExpandAnimationMs);
+    }
+
+    private void SetFullShelfOpacity(double opacity)
+    {
+        if (HeaderSurface is not null)
+        {
+            HeaderSurface.Opacity = opacity;
+        }
+
+        if (FullShelfScroll is not null)
+        {
+            FullShelfScroll.Opacity = opacity;
+        }
+
+        if (StatusSurface is not null)
+        {
+            StatusSurface.Opacity = opacity;
+        }
+    }
+
+    private void AnimateFullShelfOpacity(double opacity, int durationMs)
+    {
+        if (HeaderSurface is not null)
+        {
+            AnimateDouble(HeaderSurface, UIElement.OpacityProperty, opacity, durationMs);
+        }
+
+        if (FullShelfScroll is not null)
+        {
+            AnimateDouble(FullShelfScroll, UIElement.OpacityProperty, opacity, durationMs);
+        }
+
+        if (StatusSurface is not null)
+        {
+            AnimateDouble(StatusSurface, UIElement.OpacityProperty, opacity, durationMs);
+        }
     }
 
     private void PrepareRailEntrance()
@@ -2206,7 +2322,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (GetTransform<TranslateTransform>(RailSurface) is { } translate)
         {
-            translate.X = 14;
+            translate.X = -10;
         }
     }
 
@@ -2229,7 +2345,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         AnimateDouble(RailSurface, UIElement.OpacityProperty, 0, RailExpandAnimationMs);
-        AnimateCardTransform(RailSurface, scale: 0.96, offsetX: 10, RailExpandAnimationMs);
+        AnimateCardTransform(RailSurface, scale: 0.96, offsetX: -10, RailExpandAnimationMs);
     }
 
     private void RailSurface_MouseEnter(object sender, MouseEventArgs e)

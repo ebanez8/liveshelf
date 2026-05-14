@@ -300,7 +300,8 @@
                 </Button>
             </DockPanel>
 
-            <ScrollViewer Grid.Row="1"
+            <ScrollViewer x:Name="FullShelfScroll"
+                          Grid.Row="1"
                           Margin="7,0,7,7"
                           VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled"
@@ -611,7 +612,7 @@
                 <Border.RenderTransform>
                     <TransformGroup>
                         <ScaleTransform ScaleX="0.92" ScaleY="0.92"/>
-                        <TranslateTransform X="14"/>
+                        <TranslateTransform X="-10"/>
                     </TransformGroup>
                 </Border.RenderTransform>
                 <ItemsControl ItemsSource="{Binding Items}">

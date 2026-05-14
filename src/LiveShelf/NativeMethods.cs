@@ -75,6 +75,8 @@ internal static class NativeMethods
     internal const int DWM_TNP_VISIBLE = 0x00000008;
     internal const int DWM_TNP_SOURCECLIENTAREAONLY = 0x00000010;
 
+    internal const int RGN_OR = 2;
+
     internal static readonly IntPtr HWND_TOPMOST = new(-1);
     internal static readonly IntPtr HWND_NOTOPMOST = new(-2);
     internal static readonly IntPtr HWND_TOP = new(0);
@@ -196,6 +198,32 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern int MapWindowPoints(IntPtr hWndFrom, IntPtr hWndTo, ref POINT lpPoints, uint cPoints);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern IntPtr CreateRoundRectRgn(
+        int nLeftRect,
+        int nTopRect,
+        int nRightRect,
+        int nBottomRect,
+        int nWidthEllipse,
+        int nHeightEllipse);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern IntPtr CreateRectRgn(
+        int nLeftRect,
+        int nTopRect,
+        int nRightRect,
+        int nBottomRect);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern int CombineRgn(IntPtr hrgnDst, IntPtr hrgnSrc1, IntPtr hrgnSrc2, int iMode);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool DeleteObject(IntPtr hObject);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
 
     [DllImport("dwmapi.dll", SetLastError = true)]
     internal static extern int DwmRegisterThumbnail(IntPtr hwndDestination, IntPtr hwndSource, out IntPtr phThumbnailId);
