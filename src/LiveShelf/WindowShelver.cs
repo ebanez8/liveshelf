@@ -115,7 +115,9 @@ internal sealed class WindowShelver
             currentRect,
             sourcePolicy);
         item.ExePath = NativeMethods.GetProcessExePath(processId);
-        var initialText = WindowContentProbe.TryCapture(sourceHwnd)?.Text ?? string.Empty;
+        var initialText = ShouldProbeWindowContent(processName, title)
+            ? WindowContentProbe.TryCapture(sourceHwnd)?.Text ?? string.Empty
+            : string.Empty;
         item.IsAgentLikeSession = LooksLikeAgentSession(processName, title, initialText);
         item.SuspectedAgent = InferSuspectedAgent(processName, title, item.ExePath, initialText);
         item.PossibleCwd = InferPossibleCwd(title, initialText);
@@ -1302,6 +1304,11 @@ internal sealed class WindowShelver
             return;
         }
 
+        if (!ShouldProbeWindowContent(item.ProcessName, item.Title, item.IsAgentLikeSession))
+        {
+            return;
+        }
+
         if (now - item.LastStateProbeUtc < ContentProbeInterval)
         {
             return;
@@ -2099,8 +2106,17 @@ internal sealed class WindowShelver
 
     private static bool IsBlockedShelvingProcess(string processName)
     {
-        return processName.Equals("spotify", StringComparison.OrdinalIgnoreCase) ||
-               processName.Contains("spotify", StringComparison.OrdinalIgnoreCase);
+        return false;
+    }
+
+    private static bool ShouldProbeWindowContent(
+        string processName,
+        string title,
+        bool isKnownAgentLikeSession = false)
+    {
+        return isKnownAgentLikeSession ||
+               IsTerminalProcess(processName) ||
+               LooksLikeAgentSession(processName, title);
     }
 
     private static bool IsBrowserProcess(string processName)

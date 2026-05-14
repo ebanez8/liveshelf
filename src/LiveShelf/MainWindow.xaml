@@ -606,8 +606,16 @@
                     Padding="0,14"
                     Background="Transparent"
                     BorderThickness="0"
+                    Opacity="0"
+                    RenderTransformOrigin="0.5,0.5"
                     Visibility="{Binding RailVisibility}"
                     MouseEnter="RailSurface_MouseEnter">
+                <Border.RenderTransform>
+                    <TransformGroup>
+                        <ScaleTransform ScaleX="0.92" ScaleY="0.92"/>
+                        <TranslateTransform X="14"/>
+                    </TransformGroup>
+                </Border.RenderTransform>
                 <ItemsControl ItemsSource="{Binding Items}">
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>

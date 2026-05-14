@@ -50,6 +50,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const int AttentionAnimationMs = 720;
     private const int ReorderAnimationMs = 210;
     private const int ReorderGapAnimationMs = 130;
+    private const int DragThumbnailRefreshMs = 33;
     private const int DragShelfPollMs = 80;
     private const int DragShelfDwellMs = 420;
     private const int DragShelfHotZoneSize = 120;
@@ -95,6 +96,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _isReorderingCards;
     private int _cardDragStartIndex = -1;
     private int _liveReorderDropIndex = -1;
+    private DateTime _lastDragThumbnailRefreshUtc = DateTime.MinValue;
     private bool _isRailMode;
     private DateTime _lastHitTestLogUtc = DateTime.MinValue;
     private string _lastHitTestLogKey = string.Empty;
@@ -547,6 +549,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _cardDragStartIndex = Items.IndexOf(item);
         _liveReorderDropIndex = _cardDragStartIndex;
         _cardDragLayouts = CaptureDragCardLayouts();
+        _lastDragThumbnailRefreshUtc = DateTime.MinValue;
         _isReorderingCards = false;
         Panel.SetZIndex(card, 50);
         card.CaptureMouse();
@@ -582,6 +585,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 _cardDragLayouts.Clear();
                 _cardDragStartIndex = -1;
                 _liveReorderDropIndex = -1;
+                _lastDragThumbnailRefreshUtc = DateTime.MinValue;
                 _isReorderingCards = false;
                 e.Handled = true;
                 return;
@@ -591,6 +595,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _cardDragLayouts.Clear();
             _cardDragStartIndex = -1;
             _liveReorderDropIndex = -1;
+            _lastDragThumbnailRefreshUtc = DateTime.MinValue;
             if (sender is FrameworkElement releasedCard)
             {
                 Panel.SetZIndex(releasedCard, item.IsExpanded ? 10 : 0);
@@ -626,6 +631,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _isReorderingCards = true;
         UpdateDraggedCardVisual(_cardDragItem, position);
         UpdateLiveReorderGaps(_cardDragItem, position);
+        RefreshThumbnailsDuringDrag();
         e.Handled = true;
     }
 
@@ -1286,6 +1292,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 translate.Y = 0;
             }
         }
+    }
+
+    private void RefreshThumbnailsDuringDrag()
+    {
+        var now = DateTime.UtcNow;
+        if (now - _lastDragThumbnailRefreshUtc < TimeSpan.FromMilliseconds(DragThumbnailRefreshMs))
+        {
+            return;
+        }
+
+        _lastDragThumbnailRefreshUtc = now;
+        UpdateThumbnailDestinations();
     }
 
     private void AnimateDraggedCardHome(ShelvedWindow item)
@@ -2064,6 +2082,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         ClearPeek();
+        PrepareRailEntrance();
         _isRailMode = true;
         OnPropertyChanged(nameof(FullShelfVisibility));
         OnPropertyChanged(nameof(RailVisibility));
@@ -2071,6 +2090,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         AnimateDouble(this, FrameworkElement.WidthProperty, RailWidth, RailCollapseAnimationMs);
         var right = SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth;
         AnimateDouble(this, Window.LeftProperty, right - RailWidth, RailCollapseAnimationMs);
+        AnimateRailEntrance();
     }
 
     private void ExpandFromRail()
@@ -2081,6 +2101,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         _railCollapseTimer.Stop();
+        AnimateRailExit();
         _isRailMode = false;
         OnPropertyChanged(nameof(FullShelfVisibility));
         OnPropertyChanged(nameof(RailVisibility));
@@ -2090,6 +2111,49 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         AnimateDouble(this, FrameworkElement.WidthProperty, targetWidth, RailExpandAnimationMs);
         AnimateDouble(this, Window.LeftProperty, right - targetWidth, RailExpandAnimationMs);
         RefreshThumbnailsDuring(RailExpandAnimationMs);
+    }
+
+    private void PrepareRailEntrance()
+    {
+        if (RailSurface is null)
+        {
+            return;
+        }
+
+        RailSurface.Opacity = 0;
+        EnsureMutableCardTransform(RailSurface);
+        if (GetTransform<ScaleTransform>(RailSurface) is { } scale)
+        {
+            scale.ScaleX = 0.92;
+            scale.ScaleY = 0.92;
+        }
+
+        if (GetTransform<TranslateTransform>(RailSurface) is { } translate)
+        {
+            translate.X = 14;
+        }
+    }
+
+    private void AnimateRailEntrance()
+    {
+        if (RailSurface is null)
+        {
+            return;
+        }
+
+        AnimateDouble(RailSurface, UIElement.OpacityProperty, 1, RailCollapseAnimationMs);
+        AnimateCardTransform(RailSurface, scale: 1, offsetX: 0, RailCollapseAnimationMs);
+    }
+
+    private void AnimateRailExit()
+    {
+        if (RailSurface is null)
+        {
+            return;
+        }
+
+        AnimateDouble(RailSurface, UIElement.OpacityProperty, 0, RailExpandAnimationMs);
+        AnimateCardTransform(RailSurface, scale: 0.96, offsetX: 10, RailExpandAnimationMs);
     }
 
     private void RailSurface_MouseEnter(object sender, MouseEventArgs e)
