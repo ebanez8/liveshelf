@@ -176,7 +176,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 compositionTarget.BackgroundColor = Color.FromArgb(0, 0, 0, 0);
             }
 
-            NativeMethods.EnableMicaBackdrop(_windowHandle);
+            NativeMethods.EnableDarkWindowMode(_windowHandle);
         }
         catch
         {
@@ -193,7 +193,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 SetShelfHidden(false);
                 Dispatcher.InvokeAsync(() => RunAttentionAlert(item), DispatcherPriority.Loaded);
+                return;
             }
+
+            if (_isRailMode)
+            {
+                ExpandFromRail();
+                Dispatcher.InvokeAsync(() => RunAttentionAlert(item), DispatcherPriority.Loaded);
+                return;
+            }
+
+            Dispatcher.InvokeAsync(() => RunAttentionAlert(item), DispatcherPriority.Loaded);
         };
 
         RefreshAgentConnectionStatus();
@@ -246,7 +256,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DeactivateZoom(item);
             RunAfter(ZoomAnimationMs, () =>
             {
-                if (!IsMouseOver && _peekedItem == item && _zoomedItem is null)
+                if (!IsCursorOverShelfWindow() && _peekedItem == item && _zoomedItem is null)
                 {
                     ClearPeek();
                     ScheduleRailCollapseIfIdle();
@@ -1904,17 +1914,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var source = PresentationSource.FromVisual(this);
         var toDevice = source?.CompositionTarget?.TransformToDevice ?? Matrix.Identity;
         var bottomRight = toDevice.Transform(new Point(width, height));
-        var radius = toDevice.Transform(new Point(ShelfCornerRadius * 2, ShelfCornerRadius * 2));
+        var radius = toDevice.Transform(new Point(ShelfCornerRadius * 2.4, ShelfCornerRadius * 2.4));
 
         var widthPx = Math.Max(1, (int)Math.Ceiling(bottomRight.X));
         var heightPx = Math.Max(1, (int)Math.Ceiling(bottomRight.Y));
         var radiusPx = Math.Max(1, (int)Math.Round(radius.X));
 
         var region = NativeMethods.CreateRoundRectRgn(
-            0,
-            0,
+            -1,
+            -1,
             widthPx,
-            heightPx,
+            heightPx + 1,
             radiusPx,
             Math.Max(1, (int)Math.Round(radius.Y)));
         if (region == IntPtr.Zero)
@@ -2186,7 +2196,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void ScheduleRailCollapseIfIdle()
     {
-        if (_isRailMode || _isShelfHidden || Items.Count == 0 || IsMouseOver)
+        if (_isRailMode || _isShelfHidden || Items.Count == 0 || IsCursorOverShelfWindow())
         {
             return;
         }
@@ -2195,10 +2205,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _railCollapseTimer.Start();
     }
 
+    private bool IsCursorOverShelfWindow()
+    {
+        if (_windowHandle == IntPtr.Zero || !NativeMethods.GetCursorPos(out var point))
+        {
+            return IsMouseOver;
+        }
+
+        var local = PointFromScreen(new Point(point.X, point.Y));
+        return local.X >= 0 &&
+               local.Y >= 0 &&
+               local.X < ActualWidth &&
+               local.Y < ActualHeight;
+    }
+
     private void RailCollapseTimer_Tick(object? sender, EventArgs e)
     {
         _railCollapseTimer.Stop();
-        if (_isShelfHidden || Items.Count == 0 || IsMouseOver)
+        if (_isShelfHidden || Items.Count == 0 || IsCursorOverShelfWindow())
         {
             return;
         }

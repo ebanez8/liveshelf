@@ -506,6 +506,15 @@ internal static class NativeMethods
         DwmExtendFrameIntoClientArea(hwnd, ref margins);
     }
 
+    internal static void EnableDarkWindowMode(IntPtr hwnd)
+    {
+        var darkMode = 1;
+        DwmSetWindowAttribute(hwnd, 20, ref darkMode, sizeof(int));
+
+        var backdropType = 1;
+        DwmSetWindowAttribute(hwnd, 38, ref backdropType, sizeof(int));
+    }
+
     internal static void ForceSetForegroundWindow(IntPtr hwnd)
     {
         if (GetForegroundWindow() == hwnd)

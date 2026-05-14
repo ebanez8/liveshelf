@@ -203,7 +203,7 @@
     </Window.Resources>
 
     <Border x:Name="RootSurface"
-            BorderThickness="1,0,0,0"
+            BorderThickness="0"
             CornerRadius="12,0,0,12">
         <Border.Background>
             <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
@@ -219,12 +219,19 @@
                 <GradientStop Color="#08FFFFFF" Offset="1"/>
             </LinearGradientBrush>
         </Border.BorderBrush>
-        <Grid>
+        <Grid ClipToBounds="True">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
+            <Border Grid.Row="0"
+                    Grid.RowSpan="3"
+                    Width="1"
+                    HorizontalAlignment="Left"
+                    Background="#32FFFFFF"
+                    Opacity="0.55"
+                    IsHitTestVisible="False"/>
 
             <DockPanel x:Name="HeaderSurface" Grid.Row="0" Margin="10,10,10,7" LastChildFill="False"
                        Visibility="{Binding FullShelfVisibility}">
