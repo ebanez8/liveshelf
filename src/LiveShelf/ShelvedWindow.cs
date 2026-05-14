@@ -184,9 +184,13 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
     public Brush BadgeDotBrush => BadgeKind switch
     {
-        ShelfBadgeKind.None => StatusBrush,
+        ShelfBadgeKind.None => IsSourceAlive ? EmptyBadgeBrush : ClosedBrush,
         _ => BadgeBrush
     };
+
+    public Visibility BadgeDotVisibility => BadgeKind is not ShelfBadgeKind.None || !IsSourceAlive
+        ? Visibility.Visible
+        : Visibility.Collapsed;
 
     internal int LastContentHash { get; set; }
 
@@ -203,6 +207,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
             _badgeKind = value;
             OnPropertyChanged(nameof(BadgeKind));
             OnPropertyChanged(nameof(BadgeDotBrush));
+            OnPropertyChanged(nameof(BadgeDotVisibility));
         }
     }
 
@@ -276,6 +281,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
             OnPropertyChanged(nameof(StatusBrush));
             OnPropertyChanged(nameof(ClosedOverlayVisibility));
             OnPropertyChanged(nameof(BadgeDotBrush));
+            OnPropertyChanged(nameof(BadgeDotVisibility));
         }
     }
 
@@ -318,6 +324,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
             _badgeBrush = value;
             OnPropertyChanged(nameof(BadgeBrush));
             OnPropertyChanged(nameof(BadgeDotBrush));
+            OnPropertyChanged(nameof(BadgeDotVisibility));
         }
     }
 

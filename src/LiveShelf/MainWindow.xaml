@@ -24,22 +24,36 @@
         <SolidColorBrush x:Key="TextMuted" Color="#98A3B1"/>
 
         <Style x:Key="MediaProgressStyle" TargetType="{x:Type ProgressBar}">
-            <Setter Property="Height" Value="4"/>
-            <Setter Property="Foreground" Value="#59D6CE"/>
-            <Setter Property="Background" Value="#0D1116"/>
+            <Setter Property="Height" Value="14"/>
+            <Setter Property="Foreground" Value="#F3F7FA"/>
+            <Setter Property="Background" Value="#22FFFFFF"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="{x:Type ProgressBar}">
-                        <Grid ClipToBounds="True">
+                        <Grid ClipToBounds="False">
                             <Border Background="{TemplateBinding Background}"
-                                    CornerRadius="2"/>
+                                    Height="5"
+                                    CornerRadius="2.5"
+                                    VerticalAlignment="Center"/>
                             <Border x:Name="PART_Track"
                                     Background="Transparent"/>
                             <Decorator x:Name="PART_Indicator"
                                        HorizontalAlignment="Left">
-                                <Border Background="{TemplateBinding Foreground}"
-                                        CornerRadius="2"/>
+                                <Grid ClipToBounds="False">
+                                    <Border Background="{TemplateBinding Foreground}"
+                                            Height="5"
+                                            CornerRadius="2.5"
+                                            VerticalAlignment="Center"/>
+                                    <Ellipse Width="12"
+                                             Height="12"
+                                             Fill="{TemplateBinding Foreground}"
+                                             Stroke="#30000000"
+                                             StrokeThickness="1"
+                                             HorizontalAlignment="Right"
+                                             VerticalAlignment="Center"
+                                             Margin="0,0,-6,0"/>
+                                </Grid>
                             </Decorator>
                         </Grid>
                     </ControlTemplate>
@@ -400,7 +414,7 @@
                                         <ProgressBar Grid.Row="3"
                                                      Grid.Column="0"
                                                      Grid.ColumnSpan="2"
-                                                     Margin="0,5,0,0"
+                                                     Margin="0,3,0,0"
                                                      Minimum="0"
                                                      Maximum="100"
                                                      Value="{Binding MediaProgressPercent, Mode=OneWay}"
@@ -427,7 +441,8 @@
                                             <Ellipse Width="7"
                                                      Height="7"
                                                      VerticalAlignment="Center"
-                                                     Fill="{Binding StatusBrush}"/>
+                                                     Fill="{Binding BadgeDotBrush}"
+                                                     Visibility="{Binding BadgeDotVisibility}"/>
                                         </StackPanel>
                                     </Grid>
 
@@ -485,14 +500,13 @@
                                                            FontSize="10"
                                                            Margin="0,3,0,0"
                                                            TextTrimming="CharacterEllipsis"/>
-                                                <TextBlock Grid.Row="3"
-                                                           Text="{Binding MediaProgressBarText}"
-                                                           Foreground="#59D6CE"
-                                                           FontFamily="Consolas"
-                                                           FontSize="13"
-                                                           Margin="0,6,0,0"
-                                                           TextTrimming="CharacterEllipsis"
-                                                           Visibility="{Binding MediaProgressVisibility}"/>
+                                                <ProgressBar Grid.Row="3"
+                                                             Margin="0,8,0,0"
+                                                             Minimum="0"
+                                                             Maximum="100"
+                                                             Value="{Binding MediaProgressPercent, Mode=OneWay}"
+                                                             Style="{StaticResource MediaProgressStyle}"
+                                                             Visibility="{Binding MediaProgressVisibility}"/>
                                             </Grid>
                                         </Border>
 
@@ -589,22 +603,11 @@
                     Grid.Row="0" Grid.RowSpan="3"
                     Width="48"
                     HorizontalAlignment="Right"
-                    CornerRadius="24,0,0,24"
                     Padding="0,14"
+                    Background="Transparent"
+                    BorderThickness="0"
                     Visibility="{Binding RailVisibility}"
                     MouseEnter="RailSurface_MouseEnter">
-                <Border.Background>
-                    <SolidColorBrush Color="#40202428"/>
-                </Border.Background>
-                <Border.BorderBrush>
-                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                        <GradientStop Color="#30FFFFFF" Offset="0"/>
-                        <GradientStop Color="#10FFFFFF" Offset="1"/>
-                    </LinearGradientBrush>
-                </Border.BorderBrush>
-                <Border.BorderThickness>
-                    <Thickness>1,0,0,0</Thickness>
-                </Border.BorderThickness>
                 <ItemsControl ItemsSource="{Binding Items}">
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
@@ -624,6 +627,7 @@
                                 </Border>
                                 <Ellipse Width="9" Height="9"
                                          Fill="{Binding BadgeDotBrush}"
+                                         Visibility="{Binding BadgeDotVisibility}"
                                          Stroke="#20000000"
                                          StrokeThickness="1.5"
                                          HorizontalAlignment="Right"
