@@ -845,6 +845,43 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         InstallAgentHooks("Agents", AgentHookInstaller.EnableAllTracking);
     }
 
+    private void CopyTrackedCodexCommandMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        CopyTrackedAgentCommand("codex");
+    }
+
+    private void CopyTrackedClaudeCommandMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        CopyTrackedAgentCommand("claude");
+    }
+
+    private void GuaranteedTrackingHelpMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        MessageBox.Show(
+            this,
+            "For guaranteed Live Shelf routing, start agents through Live Shelf so a unique token is passed into the agent process and hook bridge.\n\n" +
+            $"{AgentHookInstaller.GetTrackedAgentCommand("codex")}\n" +
+            $"{AgentHookInstaller.GetTrackedAgentCommand("claude")}\n\n" +
+            "Normal hook attach mode still works as a fallback, but cwd/title/process matching is not treated as certain.",
+            "Guaranteed Agent Tracking",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+    }
+
+    private void CopyTrackedAgentCommand(string source)
+    {
+        try
+        {
+            Clipboard.SetText(AgentHookInstaller.GetTrackedAgentCommand(source));
+            StatusMessage = $"Copied tracked {source} command";
+        }
+        catch (Exception ex) when (ex is System.Runtime.InteropServices.ExternalException or System.Threading.ThreadStateException)
+        {
+            StatusMessage = $"Could not copy tracked {source} command";
+            SystemSounds.Exclamation.Play();
+        }
+    }
+
     private void InstallAgentHooks(string label, Func<AgentHookInstallResult> install)
     {
         AgentConnectionText = "Installing";

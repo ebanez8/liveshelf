@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LiveShelf", "src\LiveShelf\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LiveShelf.Bridge", "src\LiveShelf.Bridge\LiveShelf.Bridge.csproj", "{7AB6E1E8-6D67-4F80-8DC9-8B30EF0B09C4}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LiveShelf.Agent", "src\LiveShelf.Agent\LiveShelf.Agent.csproj", "{01F4BC10-7BD8-46E2-96F4-B9D8929A28D4}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -26,9 +28,14 @@ Global
 		{7AB6E1E8-6D67-4F80-8DC9-8B30EF0B09C4}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{7AB6E1E8-6D67-4F80-8DC9-8B30EF0B09C4}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{7AB6E1E8-6D67-4F80-8DC9-8B30EF0B09C4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{01F4BC10-7BD8-46E2-96F4-B9D8929A28D4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{01F4BC10-7BD8-46E2-96F4-B9D8929A28D4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{01F4BC10-7BD8-46E2-96F4-B9D8929A28D4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{01F4BC10-7BD8-46E2-96F4-B9D8929A28D4}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{1BDBB8B9-7EC3-4BDA-97ED-9F47A079CB00} = {4E5639F0-2D4F-44F3-8C4B-282CCD714A6E}
 		{7AB6E1E8-6D67-4F80-8DC9-8B30EF0B09C4} = {4E5639F0-2D4F-44F3-8C4B-282CCD714A6E}
+		{01F4BC10-7BD8-46E2-96F4-B9D8929A28D4} = {4E5639F0-2D4F-44F3-8C4B-282CCD714A6E}
 	EndGlobalSection
 EndGlobal

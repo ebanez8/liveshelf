@@ -12,17 +12,25 @@
   <ItemGroup>
     <ProjectReference Include="..\LiveShelf.Bridge\LiveShelf.Bridge.csproj"
                       ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\LiveShelf.Agent\LiveShelf.Agent.csproj"
+                      ReferenceOutputAssembly="false" />
   </ItemGroup>
 
-  <Target Name="CopyLiveShelfBridge" AfterTargets="Build">
+  <Target Name="CopyLiveShelfTools" AfterTargets="Build">
     <ItemGroup>
       <LiveShelfBridgeOutput Include="..\LiveShelf.Bridge\bin\$(Configuration)\net8.0\liveshelf-bridge.*" />
       <LiveShelfBridgeOutput Include="..\LiveShelf.Bridge\$(OutputPath)liveshelf-bridge.*" />
+      <LiveShelfAgentOutput Include="..\LiveShelf.Agent\bin\$(Configuration)\net8.0\liveshelf-agent.*" />
+      <LiveShelfAgentOutput Include="..\LiveShelf.Agent\$(OutputPath)liveshelf-agent.*" />
     </ItemGroup>
     <Copy SourceFiles="@(LiveShelfBridgeOutput)"
           DestinationFolder="$(OutDir)"
           SkipUnchangedFiles="true"
           Condition="Exists('%(LiveShelfBridgeOutput.Identity)') and !Exists('$(OutDir)liveshelf-bridge.dll')" />
+    <Copy SourceFiles="@(LiveShelfAgentOutput)"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('%(LiveShelfAgentOutput.Identity)') and !Exists('$(OutDir)liveshelf-agent.dll')" />
   </Target>
 
 </Project>

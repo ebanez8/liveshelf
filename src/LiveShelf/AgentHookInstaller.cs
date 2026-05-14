@@ -10,6 +10,7 @@ namespace LiveShelf;
 internal static class AgentHookInstaller
 {
     private const string BridgeFileName = "liveshelf-bridge.exe";
+    private const string AgentFileName = "liveshelf-agent.exe";
     private const string CodexShimFileName = "liveshelf-codex-hook.cmd";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -92,18 +93,28 @@ internal static class AgentHookInstaller
         Directory.CreateDirectory(installDirectory);
 
         var targetPath = Path.Combine(installDirectory, BridgeFileName);
-        var sourceDirectory = FindBridgeSourceDirectory();
-        if (sourceDirectory is not null)
+        var bridgeSourceDirectory = FindToolSourceDirectory(BridgeFileName, "LiveShelf.Bridge");
+        if (bridgeSourceDirectory is not null)
         {
-            foreach (var bridgeFile in Directory.EnumerateFiles(sourceDirectory, "liveshelf-bridge.*"))
+            foreach (var bridgeFile in Directory.EnumerateFiles(bridgeSourceDirectory, "liveshelf-bridge.*"))
             {
                 File.Copy(
                     bridgeFile,
                     Path.Combine(installDirectory, Path.GetFileName(bridgeFile)),
                     overwrite: true);
             }
+        }
 
-            return targetPath;
+        var agentSourceDirectory = FindToolSourceDirectory(AgentFileName, "LiveShelf.Agent");
+        if (agentSourceDirectory is not null)
+        {
+            foreach (var agentFile in Directory.EnumerateFiles(agentSourceDirectory, "liveshelf-agent.*"))
+            {
+                File.Copy(
+                    agentFile,
+                    Path.Combine(installDirectory, Path.GetFileName(agentFile)),
+                    overwrite: true);
+            }
         }
 
         if (File.Exists(targetPath))
@@ -116,9 +127,16 @@ internal static class AgentHookInstaller
             Path.Combine(AppContext.BaseDirectory, BridgeFileName));
     }
 
-    private static string? FindBridgeSourceDirectory()
+    public static string GetTrackedAgentCommand(string source)
     {
-        if (File.Exists(Path.Combine(AppContext.BaseDirectory, BridgeFileName)))
+        EnsureBridgeInstalled();
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return $"\"{Path.Combine(localAppData, "LiveShelf", AgentFileName)}\" {source}";
+    }
+
+    private static string? FindToolSourceDirectory(string fileName, string projectName)
+    {
+        if (File.Exists(Path.Combine(AppContext.BaseDirectory, fileName)))
         {
             return AppContext.BaseDirectory;
         }
@@ -128,13 +146,13 @@ internal static class AgentHookInstaller
         {
             foreach (var candidate in new[]
                      {
-                         Path.Combine(current.FullName, "src", "LiveShelf.Bridge", "bin", "Debug", "net8.0"),
-                         Path.Combine(current.FullName, "src", "LiveShelf.Bridge", "bin", "Release", "net8.0"),
-                         Path.Combine(current.FullName, "src", "LiveShelf.Bridge", "bin", "Scratch"),
+                         Path.Combine(current.FullName, "src", projectName, "bin", "Debug", "net8.0"),
+                         Path.Combine(current.FullName, "src", projectName, "bin", "Release", "net8.0"),
+                         Path.Combine(current.FullName, "src", projectName, "bin", "Scratch"),
                          Path.Combine(current.FullName, "src", "LiveShelf", "bin", "Scratch")
                      })
             {
-                if (File.Exists(Path.Combine(candidate, BridgeFileName)))
+                if (File.Exists(Path.Combine(candidate, fileName)))
                 {
                     return candidate;
                 }

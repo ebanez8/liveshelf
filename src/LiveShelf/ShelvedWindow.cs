@@ -31,6 +31,9 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     private string _acknowledgedAgentSignalKey = string.Empty;
     private string _currentAgentSignalKey = string.Empty;
     private string _linkedAgentKey = string.Empty;
+    private string _liveShelfAgentToken = string.Empty;
+    private string _terminalSessionId = string.Empty;
+    private string _launchCwd = string.Empty;
     private string _possibleCwd = string.Empty;
     private string _suspectedAgent = string.Empty;
     private string _agentDisplayTitle = string.Empty;
@@ -134,6 +137,33 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     }
 
     public bool HasLinkedAgentSession => !string.IsNullOrWhiteSpace(LinkedAgentKey);
+
+    internal string LiveShelfAgentToken
+    {
+        get => _liveShelfAgentToken;
+        set
+        {
+            if (_liveShelfAgentToken == value)
+            {
+                return;
+            }
+
+            _liveShelfAgentToken = value;
+            OnPropertyChanged(nameof(LiveShelfAgentToken));
+        }
+    }
+
+    internal string TerminalSessionId
+    {
+        get => _terminalSessionId;
+        set => _terminalSessionId = value;
+    }
+
+    internal string LaunchCwd
+    {
+        get => _launchCwd;
+        set => _launchCwd = value;
+    }
 
     internal string PossibleCwd
     {

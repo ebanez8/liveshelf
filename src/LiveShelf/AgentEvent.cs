@@ -11,6 +11,16 @@ internal sealed class AgentEvent
 
     public string TurnId { get; init; } = string.Empty;
 
+    public string LiveShelfAgentToken { get; init; } = string.Empty;
+
+    public string TerminalSessionId { get; init; } = string.Empty;
+
+    public string LaunchCwd { get; init; } = string.Empty;
+
+    public string TermProgram { get; init; } = string.Empty;
+
+    public int LiveShelfParentProcessId { get; init; }
+
     public int ProcessId { get; init; }
 
     public int[] ParentProcessIds { get; init; } = [];

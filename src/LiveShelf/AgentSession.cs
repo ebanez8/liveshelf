@@ -10,11 +10,19 @@ internal sealed class AgentSession
 
     public string Source { get; }
 
-    public string SessionId { get; }
+    public string SessionId { get; set; }
 
     public string Key => BuildKey(Source, SessionId);
 
     public string CurrentTurnId { get; set; } = string.Empty;
+
+    public string LiveShelfAgentToken { get; set; } = string.Empty;
+
+    public string TerminalSessionId { get; set; } = string.Empty;
+
+    public string LaunchCwd { get; set; } = string.Empty;
+
+    public string TermProgram { get; set; } = string.Empty;
 
     public string Cwd { get; set; } = string.Empty;
 
@@ -25,6 +33,8 @@ internal sealed class AgentSession
     public HashSet<string> ActiveToolUseIds { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public HashSet<int> RelatedProcessIds { get; } = [];
+
+    public int ForegroundProcessId { get; set; }
 
     public DateTime LastEventAtUtc { get; set; } = DateTime.UtcNow;
 

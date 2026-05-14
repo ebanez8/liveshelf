@@ -7,15 +7,19 @@ namespace LiveShelf;
 
 internal sealed class AgentSessionRegistry
 {
-    private const int AutoLinkScore = 80;
-    private const int ProcessMatchScore = 100;
-    private const int CwdMatchScore = 80;
-    private const int TitleCwdMatchScore = 80;
-    private const int SourceHintScore = 20;
-    private const int ClearWinnerMargin = 20;
+    private const int AutoLinkScore = 160;
+    private const int LinkedKeyScore = 1000;
+    private const int ForegroundProcessScore = 200;
+    private const int TerminalSessionScore = 150;
+    private const int ProcessMatchScore = 80;
+    private const int CwdMatchScore = 35;
+    private const int TitleCwdMatchScore = 20;
+    private const int SourceHintScore = 10;
+    private const int ClearWinnerMargin = 50;
 
     private readonly Func<IReadOnlyList<ShelvedWindow>> _getCards;
     private readonly Dictionary<string, AgentSession> _sessionsByKey = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, AgentSession> _sessionsByToken = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _ambiguousPromptedKeys = new(StringComparer.OrdinalIgnoreCase);
 
     public AgentSessionRegistry(Func<IReadOnlyList<ShelvedWindow>> getCards)
@@ -50,14 +54,15 @@ internal sealed class AgentSessionRegistry
             return;
         }
 
-        var key = AgentSession.BuildKey(source, sessionId);
-        if (!_sessionsByKey.TryGetValue(key, out var session))
-        {
-            session = new AgentSession(source, sessionId);
-            _sessionsByKey[key] = session;
-        }
+        var session = GetOrCreateSession(source, sessionId, agentEvent.LiveShelfAgentToken);
 
         UpdateSessionState(session, agentEvent);
+
+        if (!string.IsNullOrWhiteSpace(session.LiveShelfAgentToken))
+        {
+            ApplyTokenRoutedSession(session);
+            return;
+        }
 
         if (!string.IsNullOrWhiteSpace(session.LinkedCardId))
         {
@@ -81,7 +86,7 @@ internal sealed class AgentSessionRegistry
             return;
         }
 
-        TryAutoLinkSession(session);
+        TryAttachModeAutoLinkSession(session);
     }
 
     /// <summary>
@@ -169,8 +174,16 @@ internal sealed class AgentSessionRegistry
             return;
         }
 
+        var tokenSession = FindTokenSessionForCard(card);
+        if (tokenSession is not null)
+        {
+            LinkSessionToCard(tokenSession, card);
+            return;
+        }
+
         var candidates = _sessionsByKey.Values
             .Where(session => string.IsNullOrWhiteSpace(session.LinkedCardId))
+            .Where(session => string.IsNullOrWhiteSpace(session.LiveShelfAgentToken))
             .Where(session => DateTime.UtcNow - session.LastEventAtUtc < TimeSpan.FromHours(2))
             .Select(session => new AgentSessionCandidate(session, ScoreStrongAgentCardMatch(card, session)))
             .Where(candidate => candidate.Score > 0)
@@ -203,6 +216,9 @@ internal sealed class AgentSessionRegistry
     {
         session.LinkedCardId = card.Id;
         card.LinkedAgentKey = session.Key;
+        card.LiveShelfAgentToken = session.LiveShelfAgentToken;
+        card.TerminalSessionId = session.TerminalSessionId;
+        card.LaunchCwd = session.LaunchCwd;
         card.IsAgentLikeSession = true;
         card.SuspectedAgent = session.Source;
         _ambiguousPromptedKeys.Remove(session.Key);
@@ -214,7 +230,119 @@ internal sealed class AgentSessionRegistry
         ApplyLinkedCard(session, card);
     }
 
-    private void TryAutoLinkSession(AgentSession session)
+    private AgentSession GetOrCreateSession(string source, string sessionId, string token)
+    {
+        if (!string.IsNullOrWhiteSpace(token) &&
+            _sessionsByToken.TryGetValue(token, out var tokenSession))
+        {
+            if (!IsPendingLiveShelfSessionId(sessionId) &&
+                !string.Equals(tokenSession.SessionId, sessionId, StringComparison.OrdinalIgnoreCase))
+            {
+                _sessionsByKey.Remove(tokenSession.Key);
+                tokenSession.SessionId = sessionId;
+            }
+
+            if (!_sessionsByKey.ContainsKey(tokenSession.Key))
+            {
+                _sessionsByKey[tokenSession.Key] = tokenSession;
+            }
+
+            return tokenSession;
+        }
+
+        var key = AgentSession.BuildKey(source, sessionId);
+        if (!_sessionsByKey.TryGetValue(key, out var session))
+        {
+            session = new AgentSession(source, sessionId);
+            _sessionsByKey[key] = session;
+        }
+
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            session.LiveShelfAgentToken = token;
+            _sessionsByToken[token] = session;
+        }
+
+        return session;
+    }
+
+    private void ApplyTokenRoutedSession(AgentSession session)
+    {
+        var card = _getCards().FirstOrDefault(candidate =>
+            string.Equals(candidate.LiveShelfAgentToken, session.LiveShelfAgentToken, StringComparison.OrdinalIgnoreCase));
+        if (card is not null)
+        {
+            LinkSessionToCard(session, card);
+            TraceRoute(session, "token", card, "updated");
+            return;
+        }
+
+        card = FindCardForPendingTokenSession(session);
+        if (card is not null)
+        {
+            LinkSessionToCard(session, card);
+            TraceRoute(session, "token-claim", card, "updated");
+            return;
+        }
+
+        TraceRoute(session, "token", null, "pending");
+    }
+
+    private AgentSession? FindTokenSessionForCard(ShelvedWindow card) =>
+        _sessionsByToken.Values
+            .Where(session => string.IsNullOrWhiteSpace(session.LinkedCardId))
+            .Where(session => IsPendingTokenSessionCandidate(card, session))
+            .OrderByDescending(session => ScoreTokenSessionCandidate(card, session))
+            .FirstOrDefault();
+
+    private ShelvedWindow? FindCardForPendingTokenSession(AgentSession session) =>
+        _getCards()
+            .Where(card => !card.HasLinkedAgentSession || string.Equals(card.LiveShelfAgentToken, session.LiveShelfAgentToken, StringComparison.OrdinalIgnoreCase))
+            .Where(card => IsPendingTokenSessionCandidate(card, session))
+            .OrderByDescending(card => ScoreTokenSessionCandidate(card, session))
+            .FirstOrDefault();
+
+    private static bool IsPendingTokenSessionCandidate(ShelvedWindow card, AgentSession session) =>
+        !string.IsNullOrWhiteSpace(session.LiveShelfAgentToken) &&
+        ScoreTokenSessionCandidate(card, session) >= ProcessMatchScore;
+
+    private static int ScoreTokenSessionCandidate(ShelvedWindow card, AgentSession session)
+    {
+        var score = 0;
+        if (!string.IsNullOrWhiteSpace(card.LiveShelfAgentToken) &&
+            string.Equals(card.LiveShelfAgentToken, session.LiveShelfAgentToken, StringComparison.OrdinalIgnoreCase))
+        {
+            score += LinkedKeyScore;
+        }
+
+        if (!string.IsNullOrWhiteSpace(card.TerminalSessionId) &&
+            !string.IsNullOrWhiteSpace(session.TerminalSessionId) &&
+            string.Equals(card.TerminalSessionId, session.TerminalSessionId, StringComparison.OrdinalIgnoreCase))
+        {
+            score += TerminalSessionScore;
+        }
+
+        if (card.SourceProcessId > 0 && card.SourceProcessId == session.ForegroundProcessId)
+        {
+            score += ForegroundProcessScore;
+        }
+
+        if (CardMatchesSessionProcess(card, session))
+        {
+            score += ProcessMatchScore;
+        }
+
+        if (!string.IsNullOrWhiteSpace(session.LaunchCwd) &&
+            !string.IsNullOrWhiteSpace(card.PossibleCwd) &&
+            SamePath(session.LaunchCwd, card.PossibleCwd))
+        {
+            score += CwdMatchScore;
+        }
+
+        return score;
+    }
+
+    private void TryAttachModeAutoLinkSession(AgentSession session)
     {
         var strongCandidates = _getCards()
             .Where(card => !card.HasLinkedAgentSession)
@@ -226,6 +354,7 @@ internal sealed class AgentSessionRegistry
         if (TryChooseAutoLink(strongCandidates, out var cardToLink))
         {
             LinkSessionToCard(session, cardToLink);
+            TraceRoute(session, "attach scoring", cardToLink, "updated");
             return;
         }
 
@@ -240,7 +369,7 @@ internal sealed class AgentSessionRegistry
         if (promptCandidates.Count > 0)
         {
             Trace.WriteLine(
-                $"LiveShelf agent session needs manual link key={session.Key} strongCandidates={strongCandidates.Count} hintCandidates={hintCandidates.Count} cwd={session.Cwd} processIds={string.Join(',', session.RelatedProcessIds)}");
+                $"LiveShelf route=attach-prompt key={session.Key} strongCandidates={strongCandidates.Count} hintCandidates={hintCandidates.Count} cwd={session.Cwd} processIds={string.Join(',', session.RelatedProcessIds)} scores={FormatScores(promptCandidates)}");
             if (_ambiguousPromptedKeys.Add(session.Key))
             {
                 AmbiguousLinkDetected?.Invoke(
@@ -254,7 +383,7 @@ internal sealed class AgentSessionRegistry
         }
 
         Trace.WriteLine(
-            $"LiveShelf agent session unmatched key={session.Key} cwd={session.Cwd} processIds={string.Join(',', session.RelatedProcessIds)}");
+            $"LiveShelf route=pending key={session.Key} token={session.LiveShelfAgentToken} cwd={session.Cwd} processIds={string.Join(',', session.RelatedProcessIds)}");
     }
 
     private void ApplyLinkedCard(AgentSession session, ShelvedWindow card)
@@ -340,6 +469,15 @@ internal sealed class AgentSessionRegistry
     {
         session.LastEventAtUtc = agentEvent.Timestamp > 0 ? agentEvent.TimestampUtc : DateTime.UtcNow;
         session.Cwd = FirstNonEmpty(agentEvent.Cwd, session.Cwd);
+        session.LiveShelfAgentToken = FirstNonEmpty(agentEvent.LiveShelfAgentToken, session.LiveShelfAgentToken);
+        session.TerminalSessionId = FirstNonEmpty(agentEvent.TerminalSessionId, session.TerminalSessionId);
+        session.LaunchCwd = FirstNonEmpty(agentEvent.LaunchCwd, session.LaunchCwd);
+        session.TermProgram = FirstNonEmpty(agentEvent.TermProgram, session.TermProgram);
+        if (agentEvent.ForegroundProcessId > 0)
+        {
+            session.ForegroundProcessId = agentEvent.ForegroundProcessId;
+        }
+
         session.TranscriptPath = FirstNonEmpty(agentEvent.TranscriptPath, session.TranscriptPath);
         AddRelatedProcessIds(session, agentEvent);
 
@@ -540,6 +678,7 @@ internal sealed class AgentSessionRegistry
     private static void AddRelatedProcessIds(AgentSession session, AgentEvent agentEvent)
     {
         AddRelatedProcessId(session, agentEvent.ProcessId);
+        AddRelatedProcessId(session, agentEvent.LiveShelfParentProcessId);
         foreach (var processId in agentEvent.ParentProcessIds)
         {
             AddRelatedProcessId(session, processId);
@@ -562,6 +701,23 @@ internal sealed class AgentSessionRegistry
     private static int ScoreStrongAgentCardMatch(ShelvedWindow card, AgentSession session)
     {
         var score = 0;
+        if (string.Equals(card.LinkedAgentKey, session.Key, StringComparison.OrdinalIgnoreCase))
+        {
+            score += LinkedKeyScore;
+        }
+
+        if (!string.IsNullOrWhiteSpace(card.TerminalSessionId) &&
+            !string.IsNullOrWhiteSpace(session.TerminalSessionId) &&
+            string.Equals(card.TerminalSessionId, session.TerminalSessionId, StringComparison.OrdinalIgnoreCase))
+        {
+            score += TerminalSessionScore;
+        }
+
+        if (card.SourceProcessId > 0 && card.SourceProcessId == session.ForegroundProcessId)
+        {
+            score += ForegroundProcessScore;
+        }
+
         if (CardMatchesSessionProcess(card, session))
         {
             score += ProcessMatchScore;
@@ -646,8 +802,26 @@ internal sealed class AgentSessionRegistry
         return true;
     }
 
+    private static string FormatScores(IEnumerable<AgentCardCandidate> candidates) =>
+        string.Join(
+            "; ",
+            candidates.Select(candidate =>
+                $"{candidate.Card.Id}:{candidate.Score}:title={candidate.Card.Title}:cwd={candidate.Card.PossibleCwd}:token={candidate.Card.LiveShelfAgentToken}"));
+
+    private static void TraceRoute(AgentSession session, string route, ShelvedWindow? card, string result)
+    {
+        Trace.WriteLine(
+            $"LiveShelf route={route} result={result} key={session.Key} token={session.LiveShelfAgentToken} sessionId={session.SessionId} terminalSession={session.TerminalSessionId} launchCwd={session.LaunchCwd} cwd={session.Cwd} cardId={card?.Id ?? ""} linkedCardId={session.LinkedCardId}");
+    }
+
     private static bool HasReliableSessionId(AgentEvent agentEvent, string sessionId)
     {
+        if (!string.IsNullOrWhiteSpace(agentEvent.LiveShelfAgentToken) &&
+            IsPendingLiveShelfSessionId(sessionId))
+        {
+            return true;
+        }
+
         if (string.IsNullOrWhiteSpace(sessionId) ||
             sessionId.Equals("unknown", StringComparison.OrdinalIgnoreCase) ||
             sessionId.EndsWith(":unknown", StringComparison.OrdinalIgnoreCase))
@@ -663,6 +837,9 @@ internal sealed class AgentSessionRegistry
 
         return true;
     }
+
+    private static bool IsPendingLiveShelfSessionId(string sessionId) =>
+        sessionId.StartsWith("liveshelf-pending-", StringComparison.OrdinalIgnoreCase);
 
     private static bool TitleContainsCwdFolder(string title, string cwd)
     {

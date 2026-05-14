@@ -302,6 +302,16 @@
                                     <Ellipse Width="7" Height="7" Fill="#A78BFA"/>
                                 </MenuItem.Icon>
                             </MenuItem>
+                            <Separator Style="{StaticResource GlassSeparatorStyle}"/>
+                            <MenuItem Header="Guaranteed tracking help"
+                                      Style="{StaticResource GlassMenuItemStyle}"
+                                      Click="GuaranteedTrackingHelpMenuItem_Click"/>
+                            <MenuItem Header="Copy tracked Codex command"
+                                      Style="{StaticResource GlassMenuItemStyle}"
+                                      Click="CopyTrackedCodexCommandMenuItem_Click"/>
+                            <MenuItem Header="Copy tracked Claude command"
+                                      Style="{StaticResource GlassMenuItemStyle}"
+                                      Click="CopyTrackedClaudeCommandMenuItem_Click"/>
                         </ContextMenu>
                     </Button.ContextMenu>
                 </Button>

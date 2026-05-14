@@ -239,9 +239,12 @@ cwdRegistry.ApplyEvent(new AgentEvent
     Cwd = @"C:\Users\Evan Z\Desktop\Coding\stack"
 });
 AssertEqual(
-    "unique cwd Codex match should auto-link the matching shelved card",
-    cwdMatchCard.Id,
-    cwdUpdates.Single().Card.Id);
+    "cwd-only Codex evidence should not auto-link because cwd is only an attach hint",
+    0,
+    cwdUpdates.Count);
+AssertTrue(
+    "cwd-only Codex evidence should leave both same-source cards unlinked",
+    !cwdMatchCard.HasLinkedAgentSession && !otherCodexCard.HasLinkedAgentSession);
 
 var titleCwdMatchCard = CreateShelvedCard(
     "CCC",
@@ -260,9 +263,9 @@ titleCwdRegistry.ApplyEvent(new AgentEvent
     Cwd = @"C:\Users\Evan Z\Desktop\Coding\CCC"
 });
 AssertEqual(
-    "Codex cwd folder should auto-link a matching terminal title when exact card cwd is unavailable",
-    titleCwdMatchCard.Id,
-    titleCwdUpdates.Single().Card.Id);
+    "title cwd evidence should not auto-link because terminal titles are only attach hints",
+    0,
+    titleCwdUpdates.Count);
 
 var processMatchCard = CreateShelvedCard(
     "process - Codex",
@@ -281,9 +284,9 @@ processRegistry.ApplyEvent(new AgentEvent
     ParentProcessIds = [3301]
 });
 AssertEqual(
-    "unique process ancestry Codex match should auto-link the matching shelved card",
-    processMatchCard.Id,
-    processUpdates.Single().Card.Id);
+    "process ancestry alone should not auto-link below the conservative attach threshold",
+    0,
+    processUpdates.Count);
 
 var foregroundMatchCard = CreateShelvedCard(
     "foreground - Codex",
@@ -305,6 +308,164 @@ AssertEqual(
     "foreground process evidence should auto-link the matching shelved card",
     foregroundMatchCard.Id,
     foregroundUpdates.Single().Card.Id);
+
+var tokenCardA = CreateShelvedCard(
+    "token A - Codex",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 5101,
+    possibleCwd: @"C:\repo");
+tokenCardA.LiveShelfAgentToken = "token-A";
+var tokenCardB = CreateShelvedCard(
+    "token B - Codex",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 5102,
+    possibleCwd: @"C:\repo");
+tokenCardB.LiveShelfAgentToken = "token-B";
+var tokenRegistry = new AgentSessionRegistry(() => [tokenCardA, tokenCardB]);
+var tokenUpdates = new List<AgentCardUpdate>();
+tokenRegistry.CardUpdateRequested += (_, update) => tokenUpdates.Add(update);
+tokenRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "session-token-A",
+    LiveShelfAgentToken = "token-A",
+    EventName = "UserPromptSubmit",
+    Cwd = @"C:\repo"
+});
+tokenRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "session-token-B",
+    LiveShelfAgentToken = "token-B",
+    EventName = "UserPromptSubmit",
+    Cwd = @"C:\repo"
+});
+AssertEqual(
+    "guaranteed token routing should update exactly one card per token event",
+    2,
+    tokenUpdates.Count);
+AssertEqual("token A event should update only card A", tokenCardA.Id, tokenUpdates[0].Card.Id);
+AssertEqual("token B event should update only card B", tokenCardB.Id, tokenUpdates[1].Card.Id);
+AssertEqual("token A card should link to the token session key", "codex:session-token-A", tokenCardA.LinkedAgentKey);
+AssertEqual("token B card should link to the token session key", "codex:session-token-B", tokenCardB.LinkedAgentKey);
+
+var sameCwdTokenCardA = CreateShelvedCard(
+    "same cwd token A",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 5201,
+    possibleCwd: @"C:\same");
+sameCwdTokenCardA.LiveShelfAgentToken = "same-token-A";
+var sameCwdTokenCardB = CreateShelvedCard(
+    "same cwd token B",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 5202,
+    possibleCwd: @"C:\same");
+sameCwdTokenCardB.LiveShelfAgentToken = "same-token-B";
+var sameCwdTokenRegistry = new AgentSessionRegistry(() => [sameCwdTokenCardA, sameCwdTokenCardB]);
+var sameCwdTokenUpdates = new List<AgentCardUpdate>();
+sameCwdTokenRegistry.CardUpdateRequested += (_, update) => sameCwdTokenUpdates.Add(update);
+sameCwdTokenRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "same-session-A",
+    LiveShelfAgentToken = "same-token-A",
+    EventName = "UserPromptSubmit",
+    Cwd = @"C:\same"
+});
+sameCwdTokenRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "same-session-B",
+    LiveShelfAgentToken = "same-token-B",
+    EventName = "UserPromptSubmit",
+    Cwd = @"C:\same"
+});
+AssertEqual("same cwd token event A should update card A", sameCwdTokenCardA.Id, sameCwdTokenUpdates[0].Card.Id);
+AssertEqual("same cwd token event B should update card B", sameCwdTokenCardB.Id, sameCwdTokenUpdates[1].Card.Id);
+
+var sameCwdNoTokenCardA = CreateShelvedCard(
+    "same cwd no token A",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 5301,
+    possibleCwd: @"C:\ambiguous");
+var sameCwdNoTokenCardB = CreateShelvedCard(
+    "same cwd no token B",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 5302,
+    possibleCwd: @"C:\ambiguous");
+var sameCwdNoTokenRegistry = new AgentSessionRegistry(() => [sameCwdNoTokenCardA, sameCwdNoTokenCardB]);
+var sameCwdNoTokenUpdates = new List<AgentCardUpdate>();
+sameCwdNoTokenRegistry.CardUpdateRequested += (_, update) => sameCwdNoTokenUpdates.Add(update);
+sameCwdNoTokenRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "same-cwd-no-token",
+    EventName = "UserPromptSubmit",
+    Cwd = @"C:\ambiguous"
+});
+AssertEqual(
+    "same cwd without tokens should not update any card because attach mode is ambiguous",
+    0,
+    sameCwdNoTokenUpdates.Count);
+
+var linkedCardA = CreateShelvedCard(
+    "linked A",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 5401,
+    possibleCwd: string.Empty);
+linkedCardA.LinkedAgentKey = "codex:A";
+var linkedCardB = CreateShelvedCard(
+    "linked B",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 5402,
+    possibleCwd: string.Empty);
+linkedCardB.LinkedAgentKey = "codex:B";
+var linkedRegistry = new AgentSessionRegistry(() => [linkedCardA, linkedCardB]);
+var linkedUpdates = new List<AgentCardUpdate>();
+linkedRegistry.CardUpdateRequested += (_, update) => linkedUpdates.Add(update);
+linkedRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "A",
+    EventName = "PreToolUse",
+    ToolName = "shell_command"
+});
+AssertEqual("existing linked key should route to card A only", 1, linkedUpdates.Count);
+AssertEqual("existing linked key should not broadcast to card B", linkedCardA.Id, linkedUpdates.Single().Card.Id);
+
+var pendingTokenCards = new List<ShelvedWindow>();
+var pendingTokenRegistry = new AgentSessionRegistry(() => pendingTokenCards);
+var pendingTokenUpdates = new List<AgentCardUpdate>();
+pendingTokenRegistry.CardUpdateRequested += (_, update) => pendingTokenUpdates.Add(update);
+pendingTokenRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "liveshelf-pending-pending-token",
+    LiveShelfAgentToken = "pending-token",
+    EventName = "LiveShelfTrackedAgentStart",
+    LaunchCwd = @"C:\pending",
+    LiveShelfParentProcessId = 5501
+});
+AssertEqual("pending token event without a card should not update unrelated cards", 0, pendingTokenUpdates.Count);
+var pendingTokenCard = CreateShelvedCard(
+    "pending - Codex",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 5501,
+    possibleCwd: @"C:\pending");
+pendingTokenCards.Add(pendingTokenCard);
+pendingTokenRegistry.TryAutoLinkCard(pendingTokenCard);
+AssertEqual("later shelved matching terminal should link to the pending token session", "pending-token", pendingTokenCard.LiveShelfAgentToken);
+AssertEqual("pending token claim should update exactly the matching card", 1, pendingTokenUpdates.Count);
+AssertEqual("pending token claim should not broadcast", pendingTokenCard.Id, pendingTokenUpdates.Single().Card.Id);
 
 var installerType = typeof(AgentHookInstaller);
 var ensureCodexHooksFeature = installerType.GetMethod(

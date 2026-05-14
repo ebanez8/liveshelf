@@ -120,9 +120,23 @@ static JsonObject NormalizeEvent(string source, string input)
         FirstString(raw, "transcript_path", "transcriptPath") ??
         "unknown";
 
+    var envSource = Environment.GetEnvironmentVariable("LIVESHELF_AGENT_SOURCE");
+    var liveShelfSource = string.IsNullOrWhiteSpace(envSource)
+        ? source
+        : NormalizeSource(envSource);
+    var launchCwd = Environment.GetEnvironmentVariable("LIVESHELF_LAUNCH_CWD");
+    var terminalSession = FirstNonEmpty(
+        Environment.GetEnvironmentVariable("LIVESHELF_TERMINAL_SESSION"),
+        Environment.GetEnvironmentVariable("WT_SESSION"));
+
     return new JsonObject
     {
-        ["source"] = source,
+        ["source"] = liveShelfSource,
+        ["liveShelfAgentToken"] = Environment.GetEnvironmentVariable("LIVESHELF_AGENT_TOKEN"),
+        ["terminalSessionId"] = terminalSession,
+        ["launchCwd"] = launchCwd,
+        ["liveShelfParentProcessId"] = FirstIntString(Environment.GetEnvironmentVariable("LIVESHELF_PARENT_PROCESS_ID")),
+        ["termProgram"] = Environment.GetEnvironmentVariable("TERM_PROGRAM"),
         ["sessionId"] = sessionId,
         ["processId"] = Environment.ProcessId,
         ["parentProcessIds"] = ToJsonArray(GetParentProcessIds(Environment.ProcessId)),
@@ -141,6 +155,24 @@ static JsonObject NormalizeEvent(string source, string input)
         ["filesChanged"] = FirstInt(raw, "files_changed", "filesChanged", "changed_files_count", "changedFilesCount"),
         ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
     };
+}
+
+static string? FirstNonEmpty(params string?[] values)
+{
+    foreach (var value in values)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+    }
+
+    return null;
+}
+
+static int? FirstIntString(string? value)
+{
+    return int.TryParse(value, out var parsed) ? parsed : null;
 }
 
 static JsonArray ToJsonArray(IEnumerable<int> values)
