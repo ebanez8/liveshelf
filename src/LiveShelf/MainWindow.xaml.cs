@@ -51,6 +51,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const int ReorderAnimationMs = 210;
     private const int ReorderGapAnimationMs = 130;
     private const int DragThumbnailRefreshMs = 33;
+    private const int AnimationThumbnailRefreshMs = 16;
     private const int DragShelfPollMs = 80;
     private const int DragShelfDwellMs = 420;
     private const int DragShelfHotZoneSize = 120;
@@ -83,9 +84,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private ShelvedWindow? _zoomedItem;
     private bool _thumbnailRefreshQueued;
     private bool _isThumbnailAnimationRefreshAttached;
+    private ShelvedWindow? _thumbnailAnimationItem;
     private bool _isShelfHidden;
     private bool _hasRestoredShelvedWindowsForShutdown;
     private DateTime _thumbnailAnimationRefreshUntilUtc;
+    private DateTime _lastAnimationThumbnailRefreshUtc = DateTime.MinValue;
     private DateTime _dragShelfCandidateEnteredUtc;
     private int _shelfAnimationGeneration;
     private IntPtr _dragShelfCandidateHwnd;
@@ -1658,7 +1661,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             UpdatePreviewFrame(item);
             QueueThumbnailRefresh();
         });
-        RefreshThumbnailsDuring(durationMs);
+        RefreshThumbnailsDuring(durationMs, item);
     }
 
     private void QueueThumbnailRefresh()
@@ -1693,9 +1696,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }, DispatcherPriority.Loaded);
     }
 
-    private void RefreshThumbnailsDuring(int durationMs)
+    private void RefreshThumbnailsDuring(int durationMs, ShelvedWindow? item = null)
     {
         _thumbnailAnimationRefreshUntilUtc = DateTime.UtcNow.AddMilliseconds(durationMs + 50);
+        _thumbnailAnimationItem = item;
 
         if (_isThumbnailAnimationRefreshAttached)
         {
@@ -1703,15 +1707,29 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         _isThumbnailAnimationRefreshAttached = true;
+        _lastAnimationThumbnailRefreshUtc = DateTime.MinValue;
         CompositionTarget.Rendering += CompositionTarget_Rendering;
     }
 
     private void CompositionTarget_Rendering(object? sender, EventArgs e)
     {
-        if (DateTime.UtcNow >= _thumbnailAnimationRefreshUntilUtc)
+        var now = DateTime.UtcNow;
+        if (now >= _thumbnailAnimationRefreshUntilUtc)
         {
             StopThumbnailAnimationRefresh();
             QueueThumbnailRefresh();
+            return;
+        }
+
+        if (now - _lastAnimationThumbnailRefreshUtc < TimeSpan.FromMilliseconds(AnimationThumbnailRefreshMs))
+        {
+            return;
+        }
+
+        _lastAnimationThumbnailRefreshUtc = now;
+        if (_thumbnailAnimationItem is { } item)
+        {
+            UpdateThumbnailDestination(item);
             return;
         }
 
@@ -1727,6 +1745,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         CompositionTarget.Rendering -= CompositionTarget_Rendering;
         _isThumbnailAnimationRefreshAttached = false;
+        _thumbnailAnimationItem = null;
     }
 
     private void UpdateThumbnailDestinations()
@@ -1744,6 +1763,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 continue;
             }
 
+            _shelver.UpdateThumbnailDestination(item, thumbnailDestination);
+        }
+    }
+
+    private void UpdateThumbnailDestination(ShelvedWindow item)
+    {
+        if (_shelver is null || _windowHandle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        UpdatePreviewFrame(item);
+        if (TryGetPreviewBounds(item, out var thumbnailDestination))
+        {
             _shelver.UpdateThumbnailDestination(item, thumbnailDestination);
         }
     }
@@ -1873,8 +1906,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 _shelver?.SetThumbnailsVisible(false);
             }
+
+            QueueThumbnailRefresh();
         });
-        RefreshThumbnailsDuring(animationMs);
     }
 
     private bool ShouldShowShelf => Items.Count > 0 && !_isShelfHidden;
@@ -1957,10 +1991,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             AnimateDouble(translateTransform, TranslateTransform.XProperty, offsetX, durationMs);
         }
 
-        if (Window.GetWindow(card) is MainWindow window)
-        {
-            window.RefreshThumbnailsDuring(durationMs);
-        }
+        // Thumbnail destination updates are handled by preview/window animations.
+        // Updating all DWM thumbnails from every card transform is expensive and
+        // makes zoom/peek animations visibly drop frames.
     }
 
     private static T? GetTransform<T>(FrameworkElement element)

@@ -97,12 +97,12 @@
         </Style>
 
         <Style x:Key="HeaderActionButtonStyle" TargetType="{x:Type Button}">
-            <Setter Property="Height" Value="23"/>
-            <Setter Property="Padding" Value="8,0"/>
-            <Setter Property="Background" Value="#34FFFFFF"/>
-            <Setter Property="BorderBrush" Value="#2BFFFFFF"/>
+            <Setter Property="Height" Value="25"/>
+            <Setter Property="Padding" Value="10,0"/>
+            <Setter Property="Background" Value="#252A30"/>
+            <Setter Property="BorderBrush" Value="#202A33"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Foreground" Value="#EEF2F7"/>
+            <Setter Property="Foreground" Value="#DCE5EC"/>
             <Setter Property="FontSize" Value="10"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="Cursor" Value="Hand"/>
@@ -110,21 +110,25 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="{x:Type Button}">
                         <Border x:Name="ButtonSurface"
-                                Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="5"
+                                CornerRadius="7"
                                 Padding="{TemplateBinding Padding}">
+                            <Border.Background>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                    <GradientStop Color="#313840" Offset="0"/>
+                                    <GradientStop Color="#20252B" Offset="1"/>
+                                </LinearGradientBrush>
+                            </Border.Background>
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ButtonSurface" Property="Background" Value="#52FFFFFF"/>
-                                <Setter TargetName="ButtonSurface" Property="BorderBrush" Value="#45FFFFFF"/>
+                                <Setter TargetName="ButtonSurface" Property="BorderBrush" Value="#3E4B55"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="ButtonSurface" Property="Background" Value="#2EFFFFFF"/>
+                                <Setter TargetName="ButtonSurface" Property="Opacity" Value="0.86"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -203,9 +207,9 @@
             CornerRadius="12,0,0,12">
         <Border.Background>
             <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                <GradientStop Color="#60323840" Offset="0"/>
-                <GradientStop Color="#4A252B33" Offset="0.48"/>
-                <GradientStop Color="#5630383F" Offset="1"/>
+                <GradientStop Color="#E31A1F25" Offset="0"/>
+                <GradientStop Color="#D9151A20" Offset="0.48"/>
+                <GradientStop Color="#E01E252C" Offset="1"/>
             </LinearGradientBrush>
         </Border.Background>
         <Border.BorderBrush>
@@ -215,12 +219,6 @@
                 <GradientStop Color="#08FFFFFF" Offset="1"/>
             </LinearGradientBrush>
         </Border.BorderBrush>
-        <Border.Effect>
-            <DropShadowEffect ShadowDepth="0"
-                              BlurRadius="26"
-                              Opacity="0.26"
-                              Color="#000000"/>
-        </Border.Effect>
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
@@ -238,7 +236,7 @@
                         MinWidth="24"
                         Height="20"
                         CornerRadius="10"
-                        Background="#34FFFFFF"
+                        Background="#30363D"
                         Padding="6,1">
                     <TextBlock Text="{Binding ItemCount}"
                                FontSize="10"
