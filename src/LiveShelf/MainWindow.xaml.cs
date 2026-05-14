@@ -244,6 +244,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 if (!IsMouseOver && _peekedItem == item && _zoomedItem is null)
                 {
                     ClearPeek();
+                    ScheduleRailCollapseIfIdle();
                 }
             });
             return;
@@ -255,11 +256,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _peekCollapseTimer.Start();
         }
 
-        if (!_isRailMode && !_isShelfHidden && Items.Count > 0)
-        {
-            _railCollapseTimer.Stop();
-            _railCollapseTimer.Start();
-        }
+        ScheduleRailCollapseIfIdle();
     }
 
     private void Items_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -1032,6 +1029,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         _peekCollapseTimer.Stop();
         ClearPeek();
+        ScheduleRailCollapseIfIdle();
     }
 
     private void DragShelfTimer_Tick(object? sender, EventArgs e)
@@ -1487,6 +1485,35 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         StatusMessage = "Ready";
         PositionShelfWindow();
         QueueThumbnailRefresh();
+    }
+
+    private void ClearPeekForRailCollapse()
+    {
+        _peekCollapseTimer.Stop();
+
+        if (_peekedItem is null)
+        {
+            return;
+        }
+
+        var item = _peekedItem;
+        _peekedItem = null;
+        if (_zoomedItem == item)
+        {
+            _zoomedItem = null;
+        }
+
+        item.IsExpanded = false;
+        item.IsZoomed = false;
+
+        if (_cardElements.TryGetValue(item, out var card))
+        {
+            Panel.SetZIndex(card, 0);
+            AnimateCardTransform(card, scale: 1, offsetX: 0, RailCollapseAnimationMs);
+        }
+
+        AnimatePreviewHeight(item, CollapsedPreviewHeight, RailCollapseAnimationMs);
+        StatusMessage = "Ready";
     }
 
     private void ForgetPeek(ShelvedWindow item)
@@ -2096,12 +2123,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     public Visibility RailVisibility => ShouldShowRail ? Visibility.Visible : Visibility.Collapsed;
 
+    private void ScheduleRailCollapseIfIdle()
+    {
+        if (_isRailMode || _isShelfHidden || Items.Count == 0 || IsMouseOver)
+        {
+            return;
+        }
+
+        _railCollapseTimer.Stop();
+        _railCollapseTimer.Start();
+    }
+
     private void RailCollapseTimer_Tick(object? sender, EventArgs e)
     {
         _railCollapseTimer.Stop();
         if (_isShelfHidden || Items.Count == 0 || IsMouseOver)
         {
             return;
+        }
+
+        if (_zoomedItem is not null || _peekedItem is not null)
+        {
+            ClearPeekForRailCollapse();
         }
 
         CollapseToRail();
@@ -2114,7 +2157,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        ClearPeek();
+        ClearPeekForRailCollapse();
         PrepareRailEntrance();
         _isRailMode = true;
         OnPropertyChanged(nameof(FullShelfVisibility));
