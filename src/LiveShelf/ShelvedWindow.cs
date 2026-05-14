@@ -641,6 +641,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     internal void SetHookedAgentStatus(ShelfBadgeKind kind, string label, string detail = "")
     {
         IsAgentLikeSession = true;
+        _currentAgentSignalKey = BuildAgentSignalKey(kind, LastContentHash, detail);
         BadgeKind = kind;
 
         BadgeText = label;
@@ -658,11 +659,6 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
     internal void MarkAttentionSeen()
     {
-        if (HasLinkedAgentSession)
-        {
-            return;
-        }
-
         if (IsAgentLikeSession && IsAcknowledgableAgentSignal(BadgeKind))
         {
             _acknowledgedAgentSignalKey = _currentAgentSignalKey;

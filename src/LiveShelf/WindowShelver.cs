@@ -709,6 +709,16 @@ internal sealed class WindowShelver
             }
 
             update.Card.AgentDisplayTitle = FormatAgentDisplayTitle(update.Session.Source);
+            if (IsFinalBadge(update.Badge.Kind) && update.Card.IsAcknowledgedAgentSignal(update.Badge.Kind, update.Badge.Detail))
+            {
+                return;
+            }
+
+            if (IsRunningBadge(update.Badge.Kind) || update.Badge.Kind == ShelfBadgeKind.WaitingForApproval)
+            {
+                update.Card.ClearAgentSignalAcknowledgement();
+            }
+
             update.Card.SetHookedAgentStatus(update.Badge.Kind, update.Badge.Label, update.Badge.Detail);
             if (update.Badge.Notify)
             {

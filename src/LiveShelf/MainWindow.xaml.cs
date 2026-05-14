@@ -104,6 +104,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private DateTime _lastDragThumbnailRefreshUtc = DateTime.MinValue;
     private bool _isRailMode;
     private bool _isRailTransitioning;
+    private int _railTransitionGeneration;
     private DateTime _lastHitTestLogUtc = DateTime.MinValue;
     private string _lastHitTestLogKey = string.Empty;
     private string _statusMessage = "Ready";
@@ -1464,6 +1465,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (hidden)
         {
+            _railTransitionGeneration++;
             ClearPeek();
             _railCollapseTimer.Stop();
             _shelver?.SetThumbnailsVisible(false);
@@ -1481,6 +1483,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (!hidden)
         {
+            ResetFullShelfVisualState();
             _shelver?.SetThumbnailsVisible(true);
         }
 
@@ -1490,6 +1493,50 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             RefreshThumbnailsAfterLayout(ShelfAnimationMs);
         }
+    }
+
+    private void ResetFullShelfVisualState()
+    {
+        _railCollapseTimer.Stop();
+        _railTransitionGeneration++;
+        _isRailMode = false;
+        _isRailTransitioning = false;
+        OnPropertyChanged(nameof(FullShelfVisibility));
+        OnPropertyChanged(nameof(RailVisibility));
+
+        ResetOpacityAnimation(HeaderSurface, 1);
+        ResetOpacityAnimation(FullShelfScroll, 1);
+        ResetOpacityAnimation(StatusSurface, 1);
+        ResetOpacityAnimation(RailSurface, 0);
+
+        if (RailSurface is not null)
+        {
+            EnsureMutableCardTransform(RailSurface);
+            if (GetTransform<ScaleTransform>(RailSurface) is { } scale)
+            {
+                scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+                scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+                scale.ScaleX = 0.92;
+                scale.ScaleY = 0.92;
+            }
+
+            if (GetTransform<TranslateTransform>(RailSurface) is { } translate)
+            {
+                translate.BeginAnimation(TranslateTransform.XProperty, null);
+                translate.X = -10;
+            }
+        }
+    }
+
+    private static void ResetOpacityAnimation(UIElement? element, double opacity)
+    {
+        if (element is null)
+        {
+            return;
+        }
+
+        element.BeginAnimation(UIElement.OpacityProperty, null);
+        element.Opacity = opacity;
     }
 
     public void ReportRuntimeError(Exception exception)
@@ -2281,6 +2328,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         ClearPeekForRailCollapse();
         _isRailTransitioning = true;
+        var railGeneration = ++_railTransitionGeneration;
         PrepareRailEntrance();
         OnPropertyChanged(nameof(FullShelfVisibility));
         OnPropertyChanged(nameof(RailVisibility));
@@ -2291,6 +2339,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var right = SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth;
         AnimateDouble(this, Window.LeftProperty, right - RailWidth, RailCollapseAnimationMs, () =>
         {
+            if (railGeneration != _railTransitionGeneration)
+            {
+                return;
+            }
+
             _isRailMode = true;
             _isRailTransitioning = false;
             SetFullShelfOpacity(1);
@@ -2310,6 +2363,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         _railCollapseTimer.Stop();
         _isRailTransitioning = true;
+        var railGeneration = ++_railTransitionGeneration;
         SetFullShelfOpacity(0);
         AnimateRailExit();
         _isRailMode = false;
@@ -2321,6 +2375,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         AnimateDouble(this, FrameworkElement.WidthProperty, targetWidth, RailExpandAnimationMs);
         AnimateDouble(this, Window.LeftProperty, right - targetWidth, RailExpandAnimationMs, () =>
         {
+            if (railGeneration != _railTransitionGeneration)
+            {
+                return;
+            }
+
             _isRailTransitioning = false;
             OnPropertyChanged(nameof(FullShelfVisibility));
             OnPropertyChanged(nameof(RailVisibility));

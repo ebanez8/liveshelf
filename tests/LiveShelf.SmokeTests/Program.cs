@@ -309,6 +309,20 @@ AssertEqual(
     foregroundMatchCard.Id,
     foregroundUpdates.Single().Card.Id);
 
+var linkedDoneCard = CreateShelvedCard(
+    "linked done - Codex",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 4451,
+    possibleCwd: string.Empty);
+linkedDoneCard.LinkedAgentKey = "codex:linked-done";
+linkedDoneCard.SetHookedAgentStatus(ShelfBadgeKind.Done, "Done");
+linkedDoneCard.MarkAttentionSeen();
+AssertEqual(
+    "zooming or peeking a linked agent completion should clear the done badge",
+    ShelfBadgeKind.None,
+    linkedDoneCard.BadgeKind);
+
 var tokenCardA = CreateShelvedCard(
     "token A - Codex",
     "WindowsTerminal",
