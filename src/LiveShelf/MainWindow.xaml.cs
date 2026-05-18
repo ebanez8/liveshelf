@@ -250,6 +250,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         QueueThumbnailRefresh();
     }
 
+    private void Window_MouseEnter(object sender, MouseEventArgs e)
+    {
+        ScheduleRailCollapseAfterShelfIdle();
+    }
+
+    private void Window_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        ScheduleRailCollapseAfterShelfIdle();
+    }
+
     private void Window_MouseLeave(object sender, MouseEventArgs e)
     {
         if (_zoomedItem is { } item)
@@ -831,56 +841,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         InstallAgentHooks("Claude", AgentHookInstaller.EnableClaudeTracking);
     }
 
-    private void TestCodexTrackingMenuItem_Click(object sender, RoutedEventArgs e)
-    {
-        InstallAgentHooks("Codex test", AgentHookInstaller.TestCodexTracking);
-    }
-
-    private void TestClaudeTrackingMenuItem_Click(object sender, RoutedEventArgs e)
-    {
-        InstallAgentHooks("Claude test", AgentHookInstaller.TestClaudeTracking);
-    }
-
     private void EnableAllAgentTrackingMenuItem_Click(object sender, RoutedEventArgs e)
     {
         InstallAgentHooks("Agents", AgentHookInstaller.EnableAllTracking);
-    }
-
-    private void CopyTrackedCodexCommandMenuItem_Click(object sender, RoutedEventArgs e)
-    {
-        CopyTrackedAgentCommand("codex");
-    }
-
-    private void CopyTrackedClaudeCommandMenuItem_Click(object sender, RoutedEventArgs e)
-    {
-        CopyTrackedAgentCommand("claude");
-    }
-
-    private void GuaranteedTrackingHelpMenuItem_Click(object sender, RoutedEventArgs e)
-    {
-        MessageBox.Show(
-            this,
-            "For guaranteed Live Shelf routing, start agents through Live Shelf so a unique token is passed into the agent process and hook bridge.\n\n" +
-            $"{AgentHookInstaller.GetTrackedAgentCommand("codex")}\n" +
-            $"{AgentHookInstaller.GetTrackedAgentCommand("claude")}\n\n" +
-            "Normal hook attach mode still works as a fallback, but cwd/title/process matching is not treated as certain.",
-            "Guaranteed Agent Tracking",
-            MessageBoxButton.OK,
-            MessageBoxImage.Information);
-    }
-
-    private void CopyTrackedAgentCommand(string source)
-    {
-        try
-        {
-            Clipboard.SetText(AgentHookInstaller.GetTrackedAgentCommand(source));
-            StatusMessage = $"Copied tracked {source} command";
-        }
-        catch (Exception ex) when (ex is System.Runtime.InteropServices.ExternalException or System.Threading.ThreadStateException)
-        {
-            StatusMessage = $"Could not copy tracked {source} command";
-            SystemSounds.Exclamation.Play();
-        }
     }
 
     private void InstallAgentHooks(string label, Func<AgentHookInstallResult> install)
@@ -902,16 +865,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return;
             }
 
-            AgentConnectionText = label.EndsWith("test", StringComparison.OrdinalIgnoreCase)
-                ? "Hook OK"
-                : label == "Agents"
-                    ? "Connected"
-                    : $"{label} on";
+            AgentConnectionText = label == "Agents"
+                ? "Connected"
+                : $"{label} on";
             AgentConnectionBrush = AgentConnectedBrush;
-            if (!label.EndsWith("test", StringComparison.OrdinalIgnoreCase))
-            {
-                RefreshAgentConnectionStatus();
-            }
+            RefreshAgentConnectionStatus();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -2281,6 +2239,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void ScheduleRailCollapseIfIdle()
     {
         if (_isRailMode || _isShelfHidden || Items.Count == 0 || IsCursorOverShelfWindow())
+        {
+            return;
+        }
+
+        _railCollapseTimer.Stop();
+        _railCollapseTimer.Start();
+    }
+
+    private void ScheduleRailCollapseAfterShelfIdle()
+    {
+        if (_isRailMode ||
+            _isRailTransitioning ||
+            _isShelfHidden ||
+            Items.Count == 0 ||
+            _peekedItem is not null ||
+            _zoomedItem is not null ||
+            _isReorderingCards ||
+            _cardDragItem is not null)
         {
             return;
         }

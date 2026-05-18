@@ -7,6 +7,8 @@ namespace LiveShelf;
 
 internal sealed class AgentSessionRegistry
 {
+    private static readonly TimeSpan UnlinkedSessionTtl = TimeSpan.FromHours(6);
+
     private const int AutoLinkScore = 160;
     private const int LinkedKeyScore = 1000;
     private const int ForegroundProcessScore = 200;
@@ -89,27 +91,36 @@ internal sealed class AgentSessionRegistry
         TryAttachModeAutoLinkSession(session);
     }
 
-    /// <summary>
-    /// Periodically called by the monitor timer to detect sessions that have gone
-    /// stale (e.g. agent was rate-limited or crashed without sending Stop/StopFailure).
-    /// Re-evaluates linked cards so the badge transitions from "Working" to "Stalled".
-    /// </summary>
-    public void SweepStaleSessions()
+    internal int SessionCount => _sessionsByKey.Count;
+
+    internal int TokenSessionCount => _sessionsByToken.Count;
+
+    internal void PruneOldUnlinkedSessions(DateTime nowUtc)
     {
-        foreach (var session in _sessionsByKey.Values)
+        var liveCardIds = _getCards()
+            .Where(card => !string.IsNullOrWhiteSpace(card.LinkedAgentKey))
+            .Select(card => card.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var session in _sessionsByKey.Values.ToArray())
         {
-            if (!IsSessionStale(session) || string.IsNullOrWhiteSpace(session.LinkedCardId))
+            if (!string.IsNullOrWhiteSpace(session.LinkedCardId) && liveCardIds.Contains(session.LinkedCardId))
             {
                 continue;
             }
 
-            var linkedCard = _getCards().FirstOrDefault(card =>
-                card.Id == session.LinkedCardId &&
-                string.Equals(card.LinkedAgentKey, session.Key, StringComparison.OrdinalIgnoreCase));
-            if (linkedCard is not null)
+            if (nowUtc - session.LastEventAtUtc < UnlinkedSessionTtl)
             {
-                ApplyLinkedCard(session, linkedCard);
+                continue;
             }
+
+            _sessionsByKey.Remove(session.Key);
+            if (!string.IsNullOrWhiteSpace(session.LiveShelfAgentToken))
+            {
+                _sessionsByToken.Remove(session.LiveShelfAgentToken);
+            }
+
+            _ambiguousPromptedKeys.Remove(session.Key);
         }
     }
 
@@ -409,16 +420,6 @@ internal sealed class AgentSessionRegistry
 
     private static AgentBadge ComputeAgentBadge(AgentSession session)
     {
-        // Detect sessions stuck in active states without receiving events.
-        // This handles rate-limit and crash scenarios where the agent dies
-        // without sending a Stop or StopFailure event.
-        if (IsSessionStale(session))
-        {
-            session.Status = AgentSessionStatus.Failed;
-            session.LastStopAtUtc = session.LastEventAtUtc;
-            return new AgentBadge(ShelfBadgeKind.Failed, "Stalled", "No response from agent", true);
-        }
-
         return session.Status switch
         {
             AgentSessionStatus.Failed => new AgentBadge(ShelfBadgeKind.Failed, "Failed", BuildFailureDetail(session), true),
@@ -429,20 +430,6 @@ internal sealed class AgentSessionRegistry
             AgentSessionStatus.Idle => new AgentBadge(ShelfBadgeKind.Running, "Idle", string.Empty, false),
             _ => new AgentBadge(ShelfBadgeKind.Running, "Working", string.Empty, false)
         };
-    }
-
-    private static bool IsSessionStale(AgentSession session)
-    {
-        // Only active (in-progress) states can become stale.
-        if (session.Status is not (AgentSessionStatus.Working or
-            AgentSessionStatus.Editing or
-            AgentSessionStatus.RunningCommand))
-        {
-            return false;
-        }
-
-        var timeSinceLastEvent = DateTime.UtcNow - session.LastEventAtUtc;
-        return timeSinceLastEvent > TimeSpan.FromMinutes(2);
     }
 
     private static AgentBadge BuildDoneBadge(AgentSession session)

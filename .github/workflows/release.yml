@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish Windows build
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore LiveShelf.sln
+
+      - name: Build
+        run: dotnet build LiveShelf.sln --configuration Release --no-restore
+
+      - name: Smoke tests
+        run: dotnet run --configuration Release --project tests\LiveShelf.SmokeTests\LiveShelf.SmokeTests.csproj
+
+      - name: Publish win-x64
+        run: >
+          dotnet publish src\LiveShelf\LiveShelf.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          -p:PublishDir="${{ github.workspace }}\artifacts\publish\LiveShelf-win-x64\"
+
+      - name: Verify package contents
+        shell: pwsh
+        run: |
+          $publish = Join-Path $env:GITHUB_WORKSPACE "artifacts\publish\LiveShelf-win-x64"
+          foreach ($name in @("LiveShelf.exe", "liveshelf-agent.exe", "liveshelf-bridge.exe")) {
+            $path = Join-Path $publish $name
+            if (!(Test-Path -LiteralPath $path)) {
+              throw "Missing release file: $name"
+            }
+          }
+
+      - name: Zip package
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $publish = Join-Path $env:GITHUB_WORKSPACE "artifacts\publish\LiveShelf-win-x64"
+          $zip = Join-Path $env:GITHUB_WORKSPACE "artifacts\LiveShelf-$tag-win-x64.zip"
+          Compress-Archive -Path (Join-Path $publish "*") -DestinationPath $zip -Force
+          "RELEASE_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: LiveShelf-${{ github.ref_name }}-win-x64
+          path: ${{ env.RELEASE_ZIP }}
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" "$env:RELEASE_ZIP" `
+            --title "Live Shelf ${{ github.ref_name }}" `
+            --notes "Windows x64 self-contained build. Download the zip, extract it, and run LiveShelf.exe."

@@ -7,6 +7,13 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <Version>0.1.0</Version>
+    <AssemblyTitle>Live Shelf</AssemblyTitle>
+    <Product>Live Shelf</Product>
+    <Description>Windows-native shelf for turning hidden windows into live task cards.</Description>
+    <Authors>Live Shelf contributors</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
   <ItemGroup>

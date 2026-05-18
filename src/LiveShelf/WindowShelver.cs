@@ -554,7 +554,7 @@ internal sealed class WindowShelver
             ObserveWindowContent(item, now);
         }
 
-        _agentSessions.SweepStaleSessions();
+        _agentSessions.PruneOldUnlinkedSessions(now);
         _lastForegroundWindow = foregroundWindow;
     }
 
@@ -689,12 +689,6 @@ internal sealed class WindowShelver
     {
         _dispatcher.InvokeAsync(() =>
         {
-            if (IsHookSelfTestEvent(agentEvent))
-            {
-                StatusChanged?.Invoke(this, $"{FormatAgentDisplayTitle(agentEvent.Source)} hook test received");
-                return;
-            }
-
             _agentSessions.ApplyEvent(agentEvent);
         });
     }
@@ -1800,11 +1794,6 @@ internal sealed class WindowShelver
                token.Contains("permissionrequest", StringComparison.Ordinal) ||
                token.Contains("userpromptsubmit", StringComparison.Ordinal) ||
                token.Contains("stopfailure", StringComparison.Ordinal);
-    }
-
-    private static bool IsHookSelfTestEvent(AgentEvent agentEvent)
-    {
-        return agentEvent.EffectiveEventName.Equals("LiveShelfHookTest", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsAgentFinalEvent(string eventName)

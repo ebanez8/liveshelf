@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Build and smoke test
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore LiveShelf.sln
+
+      - name: Check formatting
+        run: dotnet format LiveShelf.sln --verify-no-changes --verbosity minimal --no-restore
+
+      - name: Build
+        run: dotnet build LiveShelf.sln --configuration Release --no-restore
+
+      - name: Smoke tests
+        run: dotnet run --configuration Release --project tests\LiveShelf.SmokeTests\LiveShelf.SmokeTests.csproj

@@ -145,7 +145,7 @@ var sourceOnlyCard = CreateShelvedCard(
     "WindowsTerminal",
     "codex",
     sourceProcessId: 1101,
-    possibleCwd: @"C:\Users\Evan Z\Desktop\Coding\stack");
+    possibleCwd: @"C:\LiveShelfTest\stack");
 var sourceOnlyRegistry = new AgentSessionRegistry(() => [sourceOnlyCard]);
 var sourceOnlyUpdates = new List<AgentCardUpdate>();
 var sourceOnlyPrompts = new List<AgentLinkAmbiguousEventArgs>();
@@ -205,7 +205,7 @@ var lateSourceOnlyCard = CreateShelvedCard(
     "WindowsTerminal",
     "codex",
     sourceProcessId: 1201,
-    possibleCwd: @"C:\Users\Evan Z\Desktop\Coding\late");
+    possibleCwd: @"C:\LiveShelfTest\late");
 lateCards.Add(lateSourceOnlyCard);
 lateSourceOnlyRegistry.TryAutoLinkCard(lateSourceOnlyCard);
 AssertEqual(
@@ -221,13 +221,13 @@ var cwdMatchCard = CreateShelvedCard(
     "WindowsTerminal",
     "codex",
     sourceProcessId: 2201,
-    possibleCwd: @"C:\Users\Evan Z\Desktop\Coding\stack");
+    possibleCwd: @"C:\LiveShelfTest\stack");
 var otherCodexCard = CreateShelvedCard(
     "other - Codex",
     "WindowsTerminal",
     "codex",
     sourceProcessId: 2202,
-    possibleCwd: @"C:\Users\Evan Z\Desktop\Coding\other");
+    possibleCwd: @"C:\LiveShelfTest\other");
 var cwdRegistry = new AgentSessionRegistry(() => [cwdMatchCard, otherCodexCard]);
 var cwdUpdates = new List<AgentCardUpdate>();
 cwdRegistry.CardUpdateRequested += (_, update) => cwdUpdates.Add(update);
@@ -236,7 +236,7 @@ cwdRegistry.ApplyEvent(new AgentEvent
     Source = "codex",
     SessionId = "session-cwd",
     EventName = "UserPromptSubmit",
-    Cwd = @"C:\Users\Evan Z\Desktop\Coding\stack"
+    Cwd = @"C:\LiveShelfTest\stack"
 });
 AssertEqual(
     "cwd-only Codex evidence should not auto-link because cwd is only an attach hint",
@@ -260,7 +260,7 @@ titleCwdRegistry.ApplyEvent(new AgentEvent
     Source = "codex",
     SessionId = "session-title-cwd",
     EventName = "UserPromptSubmit",
-    Cwd = @"C:\Users\Evan Z\Desktop\Coding\CCC"
+    Cwd = @"C:\LiveShelfTest\CCC"
 });
 AssertEqual(
     "title cwd evidence should not auto-link because terminal titles are only attach hints",
@@ -455,6 +455,29 @@ linkedRegistry.ApplyEvent(new AgentEvent
 AssertEqual("existing linked key should route to card A only", 1, linkedUpdates.Count);
 AssertEqual("existing linked key should not broadcast to card B", linkedCardA.Id, linkedUpdates.Single().Card.Id);
 
+var oldActiveCard = CreateShelvedCard(
+    "old active - Codex",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 5451,
+    possibleCwd: string.Empty);
+oldActiveCard.LinkedAgentKey = "codex:old-active";
+var oldActiveRegistry = new AgentSessionRegistry(() => [oldActiveCard]);
+var oldActiveUpdates = new List<AgentCardUpdate>();
+oldActiveRegistry.CardUpdateRequested += (_, update) => oldActiveUpdates.Add(update);
+oldActiveRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "old-active",
+    EventName = "PreToolUse",
+    ToolName = "shell_command",
+    Timestamp = DateTimeOffset.UtcNow.AddMinutes(-10).ToUnixTimeMilliseconds()
+});
+AssertEqual(
+    "old active linked sessions should not be converted to stalled failures",
+    ShelfBadgeKind.RunningCommand,
+    oldActiveUpdates.Single().Badge.Kind);
+
 var pendingTokenCards = new List<ShelvedWindow>();
 var pendingTokenRegistry = new AgentSessionRegistry(() => pendingTokenCards);
 var pendingTokenUpdates = new List<AgentCardUpdate>();
@@ -519,11 +542,11 @@ var ensureCodexConfig = installerType.GetMethod(
     BindingFlags.NonPublic | BindingFlags.Static);
 var notifyConfigPath = Path.Combine(AppContext.BaseDirectory, $"codex-notify-config-{Guid.NewGuid():N}.toml");
 File.WriteAllText(notifyConfigPath, "[features]" + Environment.NewLine + "prevent_idle_sleep = true" + Environment.NewLine);
-ensureCodexConfig?.Invoke(null, [notifyConfigPath, @"C:\Users\Evan Z\AppData\Local\LiveShelf\liveshelf-bridge.exe"]);
+ensureCodexConfig?.Invoke(null, [notifyConfigPath, @"C:\Users\Example\AppData\Local\LiveShelf\liveshelf-bridge.exe"]);
 var notifyCodexConfig = File.ReadAllText(notifyConfigPath);
 AssertTrue(
     "codex installer should register notify fallback through the bridge",
-    notifyCodexConfig.Contains("notify = [\"C:\\\\Users\\\\Evan Z\\\\AppData\\\\Local\\\\LiveShelf\\\\liveshelf-bridge.exe\", \"--source\", \"codex\"]", StringComparison.Ordinal));
+    notifyCodexConfig.Contains("notify = [\"C:\\\\Users\\\\Example\\\\AppData\\\\Local\\\\LiveShelf\\\\liveshelf-bridge.exe\", \"--source\", \"codex\"]", StringComparison.Ordinal));
 AssertTrue(
     "codex installer should enable TUI notifications for notify fallback",
     notifyCodexConfig.Contains("notification_condition = \"always\"", StringComparison.Ordinal));
@@ -544,10 +567,10 @@ AssertTrue(
 var buildCodexShimCommand = installerType.GetMethod(
     "BuildCodexShimCommand",
     BindingFlags.NonPublic | BindingFlags.Static);
-var shimCommand = buildCodexShimCommand?.Invoke(null, [@"C:\Users\Evan Z\AppData\Local\LiveShelf\liveshelf-codex-hook.cmd"]) as string;
+var shimCommand = buildCodexShimCommand?.Invoke(null, [@"C:\Users\Example\AppData\Local\LiveShelf\liveshelf-codex-hook.cmd"]) as string;
 AssertTrue(
     "codex shim command must use cmd call quoting for paths with spaces",
-    shimCommand == "cmd.exe /d /c call \"C:\\Users\\Evan Z\\AppData\\Local\\LiveShelf\\liveshelf-codex-hook.cmd\"");
+    shimCommand == "cmd.exe /d /c call \"C:\\Users\\Example\\AppData\\Local\\LiveShelf\\liveshelf-codex-hook.cmd\"");
 
 var buildCodexHooks = installerType.GetMethod(
     "BuildCodexHooks",

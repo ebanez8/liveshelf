@@ -17,6 +17,8 @@
         Loaded="Window_Loaded"
         Closing="Window_Closing"
         SizeChanged="Window_SizeChanged"
+        MouseEnter="Window_MouseEnter"
+        PreviewMouseMove="Window_PreviewMouseMove"
         MouseLeave="Window_MouseLeave">
     <Window.Resources>
         <SolidColorBrush x:Key="CardBackground" Color="#6E2B3038"/>
@@ -273,25 +275,11 @@
                                     <Ellipse Width="7" Height="7" Fill="#50E3C2"/>
                                 </MenuItem.Icon>
                             </MenuItem>
-                            <MenuItem Header="Test Codex Hook"
-                                      Style="{StaticResource GlassMenuItemStyle}"
-                                      Click="TestCodexTrackingMenuItem_Click">
-                                <MenuItem.Icon>
-                                    <Ellipse Width="7" Height="7" Stroke="#50E3C2" StrokeThickness="1.2"/>
-                                </MenuItem.Icon>
-                            </MenuItem>
                             <MenuItem Header="Connect Claude Code"
                                       Style="{StaticResource GlassMenuItemStyle}"
                                       Click="EnableClaudeTrackingMenuItem_Click">
                                 <MenuItem.Icon>
                                     <Ellipse Width="7" Height="7" Fill="#F5A623"/>
-                                </MenuItem.Icon>
-                            </MenuItem>
-                            <MenuItem Header="Test Claude Hook"
-                                      Style="{StaticResource GlassMenuItemStyle}"
-                                      Click="TestClaudeTrackingMenuItem_Click">
-                                <MenuItem.Icon>
-                                    <Ellipse Width="7" Height="7" Stroke="#F5A623" StrokeThickness="1.2"/>
                                 </MenuItem.Icon>
                             </MenuItem>
                             <Separator Style="{StaticResource GlassSeparatorStyle}"/>
@@ -302,16 +290,6 @@
                                     <Ellipse Width="7" Height="7" Fill="#A78BFA"/>
                                 </MenuItem.Icon>
                             </MenuItem>
-                            <Separator Style="{StaticResource GlassSeparatorStyle}"/>
-                            <MenuItem Header="Guaranteed tracking help"
-                                      Style="{StaticResource GlassMenuItemStyle}"
-                                      Click="GuaranteedTrackingHelpMenuItem_Click"/>
-                            <MenuItem Header="Copy tracked Codex command"
-                                      Style="{StaticResource GlassMenuItemStyle}"
-                                      Click="CopyTrackedCodexCommandMenuItem_Click"/>
-                            <MenuItem Header="Copy tracked Claude command"
-                                      Style="{StaticResource GlassMenuItemStyle}"
-                                      Click="CopyTrackedClaudeCommandMenuItem_Click"/>
                         </ContextMenu>
                     </Button.ContextMenu>
                 </Button>

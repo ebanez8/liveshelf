@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -31,10 +30,7 @@ internal static class AgentHookInstaller
             Path.Combine(codexDirectory, "hooks.json"),
             BuildCodexHooks(BuildCodexShimCommand(shimPath)));
 
-        var test = TestBridge(bridgePath, "codex");
-        return test.Success
-            ? new AgentHookInstallResult(true, $"Codex tracking enabled and tested using {bridgePath}")
-            : test;
+        return new AgentHookInstallResult(true, $"Codex tracking enabled using {bridgePath}");
     }
 
     public static AgentHookInstallResult EnableClaudeTracking()
@@ -48,10 +44,7 @@ internal static class AgentHookInstaller
             Path.Combine(claudeDirectory, "settings.json"),
             BuildClaudeHooks(BuildBridgeCommand(bridgePath, "claude")));
 
-        var test = TestBridge(bridgePath, "claude");
-        return test.Success
-            ? new AgentHookInstallResult(true, $"Claude tracking enabled and tested using {bridgePath}")
-            : test;
+        return new AgentHookInstallResult(true, $"Claude tracking enabled using {bridgePath}");
     }
 
     public static AgentHookInstallResult EnableAllTracking()
@@ -61,16 +54,6 @@ internal static class AgentHookInstaller
         return codex.Success && claude.Success
             ? new AgentHookInstallResult(true, "Codex and Claude tracking enabled")
             : new AgentHookInstallResult(false, $"{codex.Message}; {claude.Message}");
-    }
-
-    public static AgentHookInstallResult TestCodexTracking()
-    {
-        return TestBridge(EnsureBridgeInstalled(), "codex");
-    }
-
-    public static AgentHookInstallResult TestClaudeTracking()
-    {
-        return TestBridge(EnsureBridgeInstalled(), "claude");
     }
 
     public static AgentTrackingInstallStatus GetInstalledTrackingStatus()
@@ -125,13 +108,6 @@ internal static class AgentHookInstaller
         throw new FileNotFoundException(
             "Live Shelf bridge executable was not found. Build the app once, then try connecting again.",
             Path.Combine(AppContext.BaseDirectory, BridgeFileName));
-    }
-
-    public static string GetTrackedAgentCommand(string source)
-    {
-        EnsureBridgeInstalled();
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return $"\"{Path.Combine(localAppData, "LiveShelf", AgentFileName)}\" {source}";
     }
 
     private static string? FindToolSourceDirectory(string fileName, string projectName)
@@ -585,102 +561,6 @@ internal static class AgentHookInstaller
             .Replace("\"", "\\\"", StringComparison.Ordinal);
     }
 
-    private static AgentHookInstallResult TestBridge(string bridgePath, string source)
-    {
-        try
-        {
-            // Snapshot the error log size before the test so we can detect new errors
-            // even when the bridge exits with code 0 (which it always does by design).
-            var errorLogPath = Path.Combine(
-                Path.GetDirectoryName(bridgePath) ?? string.Empty,
-                "bridge-errors.log");
-            var errorLogSizeBefore = File.Exists(errorLogPath)
-                ? new FileInfo(errorLogPath).Length
-                : 0L;
-
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = bridgePath,
-                Arguments = $"--source {source}",
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
-
-            using var process = Process.Start(startInfo);
-            if (process is null)
-            {
-                return new AgentHookInstallResult(false, $"Could not start {source} bridge test");
-            }
-
-            var payload = new JsonObject
-            {
-                ["hook_event_name"] = "LiveShelfHookTest",
-                ["session_id"] = $"liveshelf-hook-test-{Guid.NewGuid():N}",
-                ["cwd"] = Environment.CurrentDirectory
-            }.ToJsonString();
-
-            process.StandardInput.Write(payload);
-            process.StandardInput.Close();
-
-            if (!process.WaitForExit(3000))
-            {
-                try
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-                catch (InvalidOperationException)
-                {
-                }
-
-                return new AgentHookInstallResult(false, $"{FormatSourceName(source)} bridge test timed out");
-            }
-
-            if (process.ExitCode != 0)
-            {
-                return new AgentHookInstallResult(false, $"{FormatSourceName(source)} bridge exited with code {process.ExitCode}");
-            }
-
-            // Check whether the bridge logged new errors during this test.
-            // The bridge swallows exceptions and always exits 0, so this is the
-            // only reliable way to detect runtime failures like JSON serialization crashes.
-            var errorLogSizeAfter = File.Exists(errorLogPath)
-                ? new FileInfo(errorLogPath).Length
-                : 0L;
-            if (errorLogSizeAfter > errorLogSizeBefore)
-            {
-                var stderr = string.Empty;
-                try
-                {
-                    stderr = process.StandardError.ReadToEnd().Trim();
-                }
-                catch
-                {
-                }
-
-                var detail = !string.IsNullOrEmpty(stderr)
-                    ? stderr
-                    : "check bridge-errors.log for details";
-                return new AgentHookInstallResult(false,
-                    $"{FormatSourceName(source)} bridge exited 0 but logged errors ({detail})");
-            }
-
-            return new AgentHookInstallResult(true, $"{FormatSourceName(source)} bridge test passed");
-        }
-        catch (Exception ex)
-        {
-            return new AgentHookInstallResult(false, $"{FormatSourceName(source)} bridge test failed: {ex.Message}");
-        }
-    }
-
-    private static string FormatSourceName(string source)
-    {
-        return source.Equals("codex", StringComparison.OrdinalIgnoreCase)
-            ? "Codex"
-            : "Claude";
-    }
 }
 
 internal readonly record struct AgentHookInstallResult(

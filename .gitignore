@@ -1,5 +1,12 @@
 bin/
 obj/
 .vs/
+.buildverify/
+artifacts/
+**/artifacts/
+TestResults/
+*.log
+*.tmp
+*.zip
 *.user
 *.suo
