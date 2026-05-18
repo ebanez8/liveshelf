@@ -1,6 +1,7 @@
 using System.IO;
 using System.IO.Pipes;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace LiveShelf;
 
@@ -10,7 +11,13 @@ internal sealed class AgentEventService : IDisposable
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        Converters =
+        {
+            new NullTolerantInt32Converter(),
+            new NullTolerantInt64Converter(),
+            new NullTolerantStringConverter()
+        }
     };
 
     private static readonly TimeSpan QueueDrainInterval = TimeSpan.FromSeconds(15);
@@ -207,8 +214,28 @@ internal sealed class AgentEventService : IDisposable
             {
                 PublishEvent(singleEvent);
             }
+            else
+            {
+                LogReceiveError($"Deserialized null AgentEvent. Payload: {Truncate(payload)}");
+            }
         }
-        catch (JsonException)
+        catch (JsonException ex)
+        {
+            LogReceiveError($"JsonException: {ex.Message}. Payload: {Truncate(payload)}");
+        }
+    }
+
+    private static string Truncate(string value) => value.Length <= 800 ? value : value[..800] + "...";
+
+    private static void LogReceiveError(string message)
+    {
+        try
+        {
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiveShelf", "logs");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, "agent-event-errors.log"), $"{DateTimeOffset.UtcNow:O} {message}{Environment.NewLine}");
+        }
+        catch
         {
         }
     }
@@ -228,5 +255,58 @@ internal sealed class AgentEventService : IDisposable
         {
             CrashLogger.Log(ex);
         }
+    }
+
+    private sealed class NullTolerantInt32Converter : JsonConverter<int>
+    {
+        public override int Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            return reader.TokenType switch
+            {
+                JsonTokenType.Null => 0,
+                JsonTokenType.Number => reader.GetInt32(),
+                JsonTokenType.String when int.TryParse(reader.GetString(), out var parsed) => parsed,
+                _ => 0
+            };
+        }
+
+        public override void Write(Utf8JsonWriter writer, int value, JsonSerializerOptions options)
+            => writer.WriteNumberValue(value);
+    }
+
+    private sealed class NullTolerantInt64Converter : JsonConverter<long>
+    {
+        public override long Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            return reader.TokenType switch
+            {
+                JsonTokenType.Null => 0L,
+                JsonTokenType.Number => reader.GetInt64(),
+                JsonTokenType.String when long.TryParse(reader.GetString(), out var parsed) => parsed,
+                _ => 0L
+            };
+        }
+
+        public override void Write(Utf8JsonWriter writer, long value, JsonSerializerOptions options)
+            => writer.WriteNumberValue(value);
+    }
+
+    private sealed class NullTolerantStringConverter : JsonConverter<string>
+    {
+        public override string Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            return reader.TokenType switch
+            {
+                JsonTokenType.Null => string.Empty,
+                JsonTokenType.String => reader.GetString() ?? string.Empty,
+                JsonTokenType.Number => reader.TryGetInt64(out var asLong) ? asLong.ToString() : reader.GetDouble().ToString(System.Globalization.CultureInfo.InvariantCulture),
+                JsonTokenType.True => "true",
+                JsonTokenType.False => "false",
+                _ => string.Empty
+            };
+        }
+
+        public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options)
+            => writer.WriteStringValue(value);
     }
 }

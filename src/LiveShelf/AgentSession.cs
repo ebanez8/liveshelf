@@ -38,6 +38,8 @@ internal sealed class AgentSession
 
     public DateTime LastEventAtUtc { get; set; } = DateTime.UtcNow;
 
+    public DateTime LastEventReceivedAtUtc { get; set; } = DateTime.UtcNow;
+
     public DateTime LastPromptAtUtc { get; set; }
 
     public DateTime LastStopAtUtc { get; set; }

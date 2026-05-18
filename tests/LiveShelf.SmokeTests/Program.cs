@@ -478,6 +478,40 @@ AssertEqual(
     ShelfBadgeKind.RunningCommand,
     oldActiveUpdates.Single().Badge.Kind);
 
+var stalledCard = CreateShelvedCard(
+    "stalled - Codex",
+    "WindowsTerminal",
+    "codex",
+    sourceProcessId: 5461,
+    possibleCwd: string.Empty);
+stalledCard.LinkedAgentKey = "codex:stalled";
+var stalledRegistry = new AgentSessionRegistry(() => [stalledCard]);
+var stalledUpdates = new List<AgentCardUpdate>();
+stalledRegistry.CardUpdateRequested += (_, update) => stalledUpdates.Add(update);
+stalledRegistry.ApplyEvent(new AgentEvent
+{
+    Source = "codex",
+    SessionId = "stalled",
+    EventName = "PreToolUse",
+    ToolName = "shell_command"
+});
+var stalledSessionField = typeof(AgentSessionRegistry)
+    .GetField("_sessionsByKey", BindingFlags.NonPublic | BindingFlags.Instance);
+var stalledSessions = (System.Collections.IDictionary)stalledSessionField!.GetValue(stalledRegistry)!;
+foreach (AgentSession session in stalledSessions.Values)
+{
+    session.LastEventReceivedAtUtc = DateTime.UtcNow.AddMinutes(-3);
+}
+stalledRegistry.SweepStaleSessions();
+AssertEqual(
+    "linked sessions that go silent for >2 min must flip to Stalled",
+    ShelfBadgeKind.Failed,
+    stalledUpdates[^1].Badge.Kind);
+AssertEqual(
+    "stalled badge label should read 'Stalled' so users distinguish kill from explicit failure",
+    "Stalled",
+    stalledUpdates[^1].Badge.Label);
+
 var pendingTokenCards = new List<ShelvedWindow>();
 var pendingTokenRegistry = new AgentSessionRegistry(() => pendingTokenCards);
 var pendingTokenUpdates = new List<AgentCardUpdate>();

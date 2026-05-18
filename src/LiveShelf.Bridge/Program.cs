@@ -6,46 +6,85 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 
 const string PipeName = "LiveShelfAgentEvents";
+const string BridgeVersion = "1.1.0-hookhealth";
+
+if (args.Length > 0 && string.Equals(args[0], "--self-test", StringComparison.OrdinalIgnoreCase))
+{
+    var ok = await RunSelfTestAsync();
+    Environment.ExitCode = ok ? 0 : 3;
+    return;
+}
+
+var bridgeStart = DateTimeOffset.UtcNow;
+var bridgeSource = ReadSource(args);
+string rawInput = string.Empty;
+string? parseError = null;
+JsonObject? parsedRaw = null;
+string pipeStatus = "not-attempted";
+string queueStatus = "not-attempted";
 
 try
 {
-    var source = ReadSource(args);
-    var input = await TryReadStdinAsync();
-    if (string.IsNullOrWhiteSpace(input))
+    rawInput = await TryReadStdinAsync();
+    if (string.IsNullOrWhiteSpace(rawInput))
     {
-        input = ReadPayloadArgument(args);
+        rawInput = ReadPayloadArgument(args);
     }
 
-    var normalized = NormalizeEvent(source, input);
+    if (!string.IsNullOrWhiteSpace(rawInput))
+    {
+        try
+        {
+            parsedRaw = JsonNode.Parse(rawInput) as JsonObject;
+            if (parsedRaw is null)
+            {
+                parseError = "not-a-json-object";
+            }
+        }
+        catch (JsonException ex)
+        {
+            parseError = ex.Message;
+        }
+    }
+
+    var normalized = NormalizeEvent(bridgeSource, parsedRaw);
     var payload = normalized.ToJsonString(BridgeJsonOptions.Value);
 
-    if (!await TrySendToLiveShelfAsync(payload))
+    var sendResult = await TrySendToLiveShelfAsync(payload);
+    pipeStatus = sendResult.Status;
+    if (!sendResult.Success)
     {
-        QueueEvent(payload);
+        queueStatus = QueueEvent(payload);
     }
+    else
+    {
+        queueStatus = "skipped";
+    }
+
+    LogRawHook(bridgeStart, bridgeSource, args, rawInput, parsedRaw, parseError, payload, pipeStatus, queueStatus);
 }
 catch (Exception ex)
 {
     TryWriteDiagnostic(ex);
     try
     {
-        // Best-effort: queue whatever partial data we have so events aren't silently lost.
         var fallback = new JsonObject
         {
-            ["source"] = ReadSource(args),
+            ["source"] = bridgeSource,
             ["eventName"] = "BridgeError",
             ["error"] = ex.Message,
             ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
         };
-        QueueEvent(fallback.ToJsonString(BridgeJsonOptions.Value));
+        queueStatus = QueueEvent(fallback.ToJsonString(BridgeJsonOptions.Value));
+        LogRawHook(bridgeStart, bridgeSource, args, rawInput, parsedRaw, parseError ?? ex.GetType().Name, fallback.ToJsonString(BridgeJsonOptions.Value), pipeStatus, queueStatus);
     }
     catch
     {
-        // Absolutely nothing we can do here — swallow.
     }
 }
 
 Environment.ExitCode = 0;
+return;
 
 static async Task<string> TryReadStdinAsync()
 {
@@ -101,17 +140,9 @@ static string ReadPayloadArgument(string[] args)
     return string.Empty;
 }
 
-static JsonObject NormalizeEvent(string source, string input)
+static JsonObject NormalizeEvent(string source, JsonObject? rawObject)
 {
-    JsonObject raw;
-    try
-    {
-        raw = JsonNode.Parse(string.IsNullOrWhiteSpace(input) ? "{}" : input) as JsonObject ?? [];
-    }
-    catch (JsonException)
-    {
-        raw = [];
-    }
+    var raw = rawObject ?? new JsonObject();
 
     var eventName = FirstString(raw, "hook_event_name", "hookEventName", "event_name", "eventName", "event", "type") ?? "Unknown";
     var sessionId =
@@ -245,7 +276,7 @@ static int GetForegroundProcessId()
     }
 }
 
-static async Task<bool> TrySendToLiveShelfAsync(string payload)
+static async Task<PipeSendResult> TrySendToLiveShelfAsync(string payload)
 {
     try
     {
@@ -254,27 +285,27 @@ static async Task<bool> TrySendToLiveShelfAsync(string payload)
         await using var writer = new StreamWriter(pipe);
         await writer.WriteLineAsync(payload);
         await writer.FlushAsync();
-        return true;
+        return new PipeSendResult(true, "delivered");
     }
     catch (TimeoutException)
     {
-        return false;
+        return new PipeSendResult(false, "timeout");
     }
-    catch (IOException)
+    catch (IOException ex)
     {
-        return false;
+        return new PipeSendResult(false, $"io:{ex.Message}");
     }
     catch (UnauthorizedAccessException)
     {
-        return false;
+        return new PipeSendResult(false, "unauthorized");
     }
-    catch (Exception)
+    catch (Exception ex)
     {
-        return false;
+        return new PipeSendResult(false, $"error:{ex.GetType().Name}");
     }
 }
 
-static void QueueEvent(string payload)
+static string QueueEvent(string payload)
 {
     try
     {
@@ -283,16 +314,112 @@ static void QueueEvent(string payload)
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, "queued-agent-events.jsonl");
         File.AppendAllText(path, payload + Environment.NewLine);
+        return "queued";
     }
-    catch (IOException)
+    catch (IOException ex)
     {
+        return $"queue-io-error:{ex.Message}";
     }
     catch (UnauthorizedAccessException)
     {
+        return "queue-unauthorized";
     }
-    catch (Exception)
+    catch (Exception ex)
+    {
+        return $"queue-error:{ex.GetType().Name}";
+    }
+}
+
+static void LogRawHook(
+    DateTimeOffset startedAt,
+    string source,
+    string[] argv,
+    string rawInput,
+    JsonObject? parsedRaw,
+    string? parseError,
+    string normalizedPayload,
+    string pipeStatus,
+    string queueStatus)
+{
+    try
+    {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var logDir = Path.Combine(localAppData, "LiveShelf", "logs");
+        Directory.CreateDirectory(logDir);
+        var path = Path.Combine(logDir, "raw-hooks.jsonl");
+
+        var entry = new JsonObject
+        {
+            ["timestamp"] = startedAt.ToString("O"),
+            ["source"] = source,
+            ["bridgeVersion"] = BridgeVersion,
+            ["argv"] = ToJsonNodeArray(argv.Select(a => (JsonNode?)JsonValue.Create(a))),
+            ["cwd"] = Environment.CurrentDirectory,
+            ["stdinLength"] = rawInput?.Length ?? 0,
+            ["raw"] = parsedRaw?.DeepClone(),
+            ["parseError"] = parseError,
+            ["normalized"] = JsonNode.Parse(normalizedPayload),
+            ["pipeStatus"] = pipeStatus,
+            ["queueStatus"] = queueStatus,
+            ["liveShelfAgentToken"] = Environment.GetEnvironmentVariable("LIVESHELF_AGENT_TOKEN"),
+            ["wtSession"] = Environment.GetEnvironmentVariable("WT_SESSION"),
+            ["termProgram"] = Environment.GetEnvironmentVariable("TERM_PROGRAM"),
+            ["processId"] = Environment.ProcessId
+        };
+
+        File.AppendAllText(path, entry.ToJsonString(BridgeJsonOptions.Value) + Environment.NewLine);
+
+        TruncateIfTooLarge(path, 4 * 1024 * 1024);
+    }
+    catch
     {
     }
+}
+
+static void TruncateIfTooLarge(string path, long maxBytes)
+{
+    try
+    {
+        var info = new FileInfo(path);
+        if (info.Exists && info.Length > maxBytes)
+        {
+            var lines = File.ReadAllLines(path);
+            File.WriteAllLines(path, lines.Skip(Math.Max(0, lines.Length - 500)));
+        }
+    }
+    catch
+    {
+    }
+}
+
+static JsonArray ToJsonNodeArray(IEnumerable<JsonNode?> values)
+{
+    var array = new JsonArray();
+    foreach (var value in values)
+    {
+        array.Add(value);
+    }
+
+    return array;
+}
+
+static async Task<bool> RunSelfTestAsync()
+{
+    var startedAt = DateTimeOffset.UtcNow;
+    var synthetic = new JsonObject
+    {
+        ["source"] = "self-test",
+        ["sessionId"] = $"self-test-{Guid.NewGuid():N}",
+        ["eventName"] = "BridgeSelfTest",
+        ["timestamp"] = startedAt.ToUnixTimeMilliseconds(),
+        ["bridgeVersion"] = BridgeVersion
+    };
+
+    var payload = synthetic.ToJsonString(BridgeJsonOptions.Value);
+    var send = await TrySendToLiveShelfAsync(payload);
+    var queueStatus = send.Success ? "skipped" : QueueEvent(payload);
+    LogRawHook(startedAt, "self-test", new[] { "--self-test" }, payload, synthetic, null, payload, send.Status, queueStatus);
+    return send.Success;
 }
 
 static void TryWriteDiagnostic(Exception exception)
@@ -501,6 +628,8 @@ struct PROCESS_BASIC_INFORMATION
     public IntPtr UniqueProcessId;
     public IntPtr InheritedFromUniqueProcessId;
 }
+
+readonly record struct PipeSendResult(bool Success, string Status);
 
 static class BridgeJsonOptions
 {

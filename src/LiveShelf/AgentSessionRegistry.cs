@@ -95,6 +95,39 @@ internal sealed class AgentSessionRegistry
 
     internal int TokenSessionCount => _sessionsByToken.Count;
 
+    internal IReadOnlyCollection<AgentSession> Sessions => _sessionsByKey.Values;
+
+    public void SweepStaleSessions()
+    {
+        foreach (var session in _sessionsByKey.Values)
+        {
+            if (!IsSessionStale(session) || string.IsNullOrWhiteSpace(session.LinkedCardId))
+            {
+                continue;
+            }
+
+            var linkedCard = _getCards().FirstOrDefault(card =>
+                card.Id == session.LinkedCardId &&
+                string.Equals(card.LinkedAgentKey, session.Key, StringComparison.OrdinalIgnoreCase));
+            if (linkedCard is not null)
+            {
+                ApplyLinkedCard(session, linkedCard);
+            }
+        }
+    }
+
+    private static bool IsSessionStale(AgentSession session)
+    {
+        if (session.Status is not (AgentSessionStatus.Working or
+            AgentSessionStatus.Editing or
+            AgentSessionStatus.RunningCommand))
+        {
+            return false;
+        }
+
+        return DateTime.UtcNow - session.LastEventReceivedAtUtc > TimeSpan.FromMinutes(2);
+    }
+
     internal void PruneOldUnlinkedSessions(DateTime nowUtc)
     {
         var liveCardIds = _getCards()
@@ -420,6 +453,16 @@ internal sealed class AgentSessionRegistry
 
     private static AgentBadge ComputeAgentBadge(AgentSession session)
     {
+        // Agents that get killed (Ctrl+C, terminal closed, OS crash) never send a final
+        // Stop/StopFailure event. Without this check the card stays "Running command"
+        // forever. Keyed on receive time so legitimate old-timestamp events don't trip it.
+        if (IsSessionStale(session))
+        {
+            session.Status = AgentSessionStatus.Failed;
+            session.LastStopAtUtc = session.LastEventReceivedAtUtc;
+            return new AgentBadge(ShelfBadgeKind.Failed, "Stalled", "No response from agent", true);
+        }
+
         return session.Status switch
         {
             AgentSessionStatus.Failed => new AgentBadge(ShelfBadgeKind.Failed, "Failed", BuildFailureDetail(session), true),
@@ -455,6 +498,7 @@ internal sealed class AgentSessionRegistry
     private static void UpdateSessionState(AgentSession session, AgentEvent agentEvent)
     {
         session.LastEventAtUtc = agentEvent.Timestamp > 0 ? agentEvent.TimestampUtc : DateTime.UtcNow;
+        session.LastEventReceivedAtUtc = DateTime.UtcNow;
         session.Cwd = FirstNonEmpty(agentEvent.Cwd, session.Cwd);
         session.LiveShelfAgentToken = FirstNonEmpty(agentEvent.LiveShelfAgentToken, session.LiveShelfAgentToken);
         session.TerminalSessionId = FirstNonEmpty(agentEvent.TerminalSessionId, session.TerminalSessionId);

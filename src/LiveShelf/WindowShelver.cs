@@ -25,6 +25,7 @@ internal sealed class WindowShelver
     private readonly ShelfEventBridge _eventBridge;
     private readonly AgentEventService _agentEventService;
     private readonly AgentSessionRegistry _agentSessions;
+    private readonly HookHealthDiagnostics _hookHealth = new();
     private readonly MediaSessionService _mediaSessionService;
     private IReadOnlyList<MediaSessionSnapshot> _latestMediaSessions = [];
     private IntPtr _lastForegroundWindow;
@@ -554,7 +555,9 @@ internal sealed class WindowShelver
             ObserveWindowContent(item, now);
         }
 
+        _agentSessions.SweepStaleSessions();
         _agentSessions.PruneOldUnlinkedSessions(now);
+        _hookHealth.WriteSnapshot(_agentSessions.Sessions, _items);
         _lastForegroundWindow = foregroundWindow;
     }
 
@@ -687,9 +690,11 @@ internal sealed class WindowShelver
 
     private void AgentEventService_EventReceived(object? sender, AgentEvent agentEvent)
     {
+        _hookHealth.RecordEvent(agentEvent);
         _dispatcher.InvokeAsync(() =>
         {
             _agentSessions.ApplyEvent(agentEvent);
+            _hookHealth.WriteSnapshot(_agentSessions.Sessions, _items);
         });
     }
 
