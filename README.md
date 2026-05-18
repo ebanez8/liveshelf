@@ -8,7 +8,7 @@
 Live Shelf turns normal desktop windows into live task cards on a right-edge shelf. It is built for long-running terminals, browsers, editors, media apps, and coding-agent sessions that you want nearby, but not sitting on top of your workspace.
 
 <p align="center">
-  <img src="assets/rail.png" alt="Live Shelf collapsed rail mode" width="360" />
+  <img src="assets/rail.png" alt="Live Shelf collapsed rail mode" width="720" />
   <br />
   <em>Collapsed rail mode</em>
 </p>
