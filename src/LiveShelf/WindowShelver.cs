@@ -11,6 +11,7 @@ namespace LiveShelf;
 internal sealed class WindowShelver
 {
     private static readonly TimeSpan ContentProbeInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan MaxIdleContentProbeInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan AgentStableDoneDelay = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan StableDoneDelay = TimeSpan.FromSeconds(9);
     private static readonly TimeSpan MediaThumbnailRecoveryDelay = TimeSpan.FromMilliseconds(350);
@@ -1318,7 +1319,7 @@ internal sealed class WindowShelver
             return;
         }
 
-        if (now - item.LastStateProbeUtc < ContentProbeInterval)
+        if (now - item.LastStateProbeUtc < GetContentProbeInterval(item))
         {
             return;
         }
@@ -1328,6 +1329,9 @@ internal sealed class WindowShelver
         var snapshot = WindowContentProbe.TryCapture(item.SourceHwnd);
         if (snapshot is null)
         {
+            item.ConsecutiveUnchangedContentProbeCount = Math.Min(
+                item.ConsecutiveUnchangedContentProbeCount + 1,
+                32);
             return;
         }
 
@@ -1338,6 +1342,7 @@ internal sealed class WindowShelver
         if (looksBusy)
         {
             item.ClearAgentSignalAcknowledgement();
+            item.ConsecutiveUnchangedContentProbeCount = 0;
             item.HasObservedBusySignal = true;
             item.HasDetectedChange = true;
             item.HasReportedStable = false;
@@ -1348,6 +1353,7 @@ internal sealed class WindowShelver
         {
             item.HasContentSnapshot = true;
             item.LastContentHash = snapshot.Hash;
+            item.ConsecutiveUnchangedContentProbeCount = 0;
 
             return;
         }
@@ -1355,6 +1361,7 @@ internal sealed class WindowShelver
         if (snapshot.Hash != item.LastContentHash)
         {
             item.LastContentHash = snapshot.Hash;
+            item.ConsecutiveUnchangedContentProbeCount = 0;
             var contentBadge = GetContentChangeBadge(item, text);
             if (item.IsAgentLikeSession && contentBadge is ShelfBadgeKind.None)
             {
@@ -1377,6 +1384,10 @@ internal sealed class WindowShelver
             return;
         }
 
+        item.ConsecutiveUnchangedContentProbeCount = Math.Min(
+            item.ConsecutiveUnchangedContentProbeCount + 1,
+            32);
+
         var doneDelay = item.IsAgentLikeSession ? AgentStableDoneDelay : StableDoneDelay;
         if (!item.HasDetectedChange ||
             item.HasReportedStable ||
@@ -1393,6 +1404,27 @@ internal sealed class WindowShelver
 
         item.HasReportedStable = true;
         SetBadgeAndAlert(item, stableBadge);
+    }
+
+    private static TimeSpan GetContentProbeInterval(ShelvedWindow item)
+    {
+        if (item.HasObservedBusySignal || item.BadgeKind is ShelfBadgeKind.Running or
+            ShelfBadgeKind.EditingFiles or
+            ShelfBadgeKind.RunningCommand or
+            ShelfBadgeKind.WaitingForApproval)
+        {
+            return ContentProbeInterval;
+        }
+
+        if (!item.HasContentSnapshot)
+        {
+            return ContentProbeInterval;
+        }
+
+        var seconds = Math.Min(
+            MaxIdleContentProbeInterval.TotalSeconds,
+            Math.Pow(2, Math.Min(item.ConsecutiveUnchangedContentProbeCount, 5)));
+        return TimeSpan.FromSeconds(seconds);
     }
 
     private void SetBadgeAndAlert(
@@ -1732,7 +1764,13 @@ internal sealed class WindowShelver
     {
         return update.Badge.Notify &&
                update.Badge.Kind is ShelfBadgeKind.Done or ShelfBadgeKind.DoneNeedsReview or ShelfBadgeKind.Failed &&
-               update.Session.Source.Contains("codex", StringComparison.OrdinalIgnoreCase);
+               IsRevealableAgentSource(update.Session.Source);
+    }
+
+    private static bool IsRevealableAgentSource(string source)
+    {
+        return source.Contains("codex", StringComparison.OrdinalIgnoreCase) ||
+               source.Contains("claude", StringComparison.OrdinalIgnoreCase);
     }
 
     private static int GetBadgePriority(ShelfBadgeKind badgeKind)

@@ -14,6 +14,12 @@
     <Authors>Live Shelf contributors</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryType>git</RepositoryType>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
 
   <ItemGroup>
@@ -38,6 +44,32 @@
           DestinationFolder="$(OutDir)"
           SkipUnchangedFiles="true"
           Condition="Exists('%(LiveShelfAgentOutput.Identity)') and !Exists('$(OutDir)liveshelf-agent.dll')" />
+  </Target>
+
+  <Target Name="RemoveReleaseSymbolsFromPublish" AfterTargets="Publish" Condition="'$(Configuration)' == 'Release'">
+    <ItemGroup>
+      <PublishedSymbols Include="$(PublishDir)**\*.pdb" />
+      <PublishedDiagnostics Include="$(PublishDir)createdump.exe" />
+      <PublishedDiagnostics Include="$(PublishDir)mscordbi.dll" />
+      <PublishedDiagnostics Include="$(PublishDir)mscordaccore.dll" />
+      <PublishedDiagnostics Include="$(PublishDir)mscordaccore_*.dll" />
+      <PublishedSatelliteDirs Include="$(PublishDir)cs" />
+      <PublishedSatelliteDirs Include="$(PublishDir)de" />
+      <PublishedSatelliteDirs Include="$(PublishDir)es" />
+      <PublishedSatelliteDirs Include="$(PublishDir)fr" />
+      <PublishedSatelliteDirs Include="$(PublishDir)it" />
+      <PublishedSatelliteDirs Include="$(PublishDir)ja" />
+      <PublishedSatelliteDirs Include="$(PublishDir)ko" />
+      <PublishedSatelliteDirs Include="$(PublishDir)pl" />
+      <PublishedSatelliteDirs Include="$(PublishDir)pt-BR" />
+      <PublishedSatelliteDirs Include="$(PublishDir)ru" />
+      <PublishedSatelliteDirs Include="$(PublishDir)tr" />
+      <PublishedSatelliteDirs Include="$(PublishDir)zh-Hans" />
+      <PublishedSatelliteDirs Include="$(PublishDir)zh-Hant" />
+    </ItemGroup>
+    <Delete Files="@(PublishedSymbols)" />
+    <Delete Files="@(PublishedDiagnostics)" />
+    <RemoveDir Directories="@(PublishedSatelliteDirs)" />
   </Target>
 
 </Project>

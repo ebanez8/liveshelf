@@ -33,7 +33,7 @@ dotnet run --project tests\LiveShelf.SmokeTests\LiveShelf.SmokeTests.csproj
 Create a local release build:
 
 ```powershell
-dotnet publish src\LiveShelf\LiveShelf.csproj -c Release -r win-x64 --self-contained true -p:PublishDir=artifacts\publish\LiveShelf-win-x64\
+dotnet publish src\LiveShelf\LiveShelf.csproj -c Release -r win-x64 --self-contained true -p:PublishDir="$PWD\artifacts\publish\LiveShelf-win-x64\"
 ```
 
 ## Usage

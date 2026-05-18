@@ -32,11 +32,16 @@ jobs:
         run: dotnet run --configuration Release --project tests\LiveShelf.SmokeTests\LiveShelf.SmokeTests.csproj
 
       - name: Publish win-x64
-        run: >
-          dotnet publish src\LiveShelf\LiveShelf.csproj
-          --configuration Release
-          --runtime win-x64
-          --self-contained true
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          $version = $env:RELEASE_VERSION.TrimStart("v");
+          dotnet publish src\LiveShelf\LiveShelf.csproj `
+          --configuration Release `
+          --runtime win-x64 `
+          --self-contained true `
+          -p:Version="$version" `
           -p:PublishDir="${{ github.workspace }}\artifacts\publish\LiveShelf-win-x64\"
 
       - name: Verify package contents
@@ -49,6 +54,24 @@ jobs:
               throw "Missing release file: $name"
             }
           }
+          if (Get-ChildItem -LiteralPath $publish -Filter *.pdb -Recurse) {
+            throw "Release package should not contain PDB files"
+          }
+          foreach ($name in @("createdump.exe", "mscordbi.dll", "mscordaccore.dll")) {
+            if (Test-Path -LiteralPath (Join-Path $publish $name)) {
+              throw "Release package should not contain diagnostic runtime file: $name"
+            }
+          }
+          foreach ($culture in @("cs", "de", "es", "fr", "it", "ja", "ko", "pl", "pt-BR", "ru", "tr", "zh-Hans", "zh-Hant")) {
+            if (Test-Path -LiteralPath (Join-Path $publish $culture)) {
+              throw "Release package should not contain unused satellite resource directory: $culture"
+            }
+          }
+          $expectedVersion = "${{ github.ref_name }}".TrimStart("v")
+          $actualVersion = (Get-Item (Join-Path $publish "LiveShelf.exe")).VersionInfo.ProductVersion
+          if ($actualVersion -notlike "$expectedVersion*") {
+            throw "LiveShelf.exe version '$actualVersion' does not match tag '$expectedVersion'"
+          }
 
       - name: Zip package
         shell: pwsh
@@ -57,6 +80,22 @@ jobs:
           $publish = Join-Path $env:GITHUB_WORKSPACE "artifacts\publish\LiveShelf-win-x64"
           $zip = Join-Path $env:GITHUB_WORKSPACE "artifacts\LiveShelf-$tag-win-x64.zip"
           Compress-Archive -Path (Join-Path $publish "*") -DestinationPath $zip -Force
+          if (!(Test-Path -LiteralPath $zip)) {
+            throw "Release zip was not created"
+          }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zipEntries = [System.IO.Compression.ZipFile]::OpenRead($zip)
+          try {
+            $entryNames = $zipEntries.Entries | ForEach-Object { $_.FullName.Replace("/", "\") }
+            foreach ($name in @("LiveShelf.exe", "liveshelf-agent.exe", "liveshelf-bridge.exe")) {
+              if ($entryNames -notcontains $name) {
+                throw "Release zip missing: $name"
+              }
+            }
+          }
+          finally {
+            $zipEntries.Dispose()
+          }
           "RELEASE_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload workflow artifact
@@ -72,4 +111,4 @@ jobs:
         run: |
           gh release create "${{ github.ref_name }}" "$env:RELEASE_ZIP" `
             --title "Live Shelf ${{ github.ref_name }}" `
-            --notes "Windows x64 self-contained build. Download the zip, extract it, and run LiveShelf.exe."
+            --notes "Windows x64 self-contained beta build. Download the zip, extract it, and run LiveShelf.exe. This beta is not code-signed, so Windows SmartScreen may warn on first launch."

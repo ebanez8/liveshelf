@@ -21,6 +21,7 @@ internal sealed class AgentEventService : IDisposable
     };
 
     private static readonly TimeSpan QueueDrainInterval = TimeSpan.FromSeconds(15);
+    internal const int MaxPayloadChars = 1024 * 1024;
 
     private readonly CancellationTokenSource _cancellation = new();
     private readonly Task _listenerTask;
@@ -156,12 +157,13 @@ internal sealed class AgentEventService : IDisposable
             }
 
             var tempPath = $"{path}.draining-{Guid.NewGuid():N}";
-            string[] lines;
             try
             {
                 File.Move(path, tempPath);
-                lines = File.ReadAllLines(tempPath);
-                File.Delete(tempPath);
+                foreach (var line in File.ReadLines(tempPath))
+                {
+                    PublishPayload(line);
+                }
             }
             catch (IOException)
             {
@@ -171,10 +173,9 @@ internal sealed class AgentEventService : IDisposable
             {
                 return;
             }
-
-            foreach (var line in lines)
+            finally
             {
-                PublishPayload(line);
+                TryDeleteFile(tempPath);
             }
         }
         finally
@@ -188,6 +189,12 @@ internal sealed class AgentEventService : IDisposable
         payload = payload.Trim();
         if (payload.Length == 0)
         {
+            return;
+        }
+
+        if (payload.Length > MaxPayloadChars)
+        {
+            LogReceiveError($"Payload skipped because it exceeds {MaxPayloadChars} characters.");
             return;
         }
 
@@ -226,6 +233,20 @@ internal sealed class AgentEventService : IDisposable
     }
 
     private static string Truncate(string value) => value.Length <= 800 ? value : value[..800] + "...";
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+        }
+    }
 
     private static void LogReceiveError(string message)
     {

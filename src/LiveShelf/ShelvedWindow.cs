@@ -110,6 +110,8 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
     internal DateTime LastStateProbeUtc { get; set; }
 
+    internal int ConsecutiveUnchangedContentProbeCount { get; set; }
+
     internal bool HasDetectedChange { get; set; }
 
     internal bool HasReportedStable { get; set; }

@@ -27,6 +27,8 @@
              Link="AgentBadge.cs" />
     <Compile Include="..\..\src\LiveShelf\AgentEvent.cs"
              Link="AgentEvent.cs" />
+    <Compile Include="..\..\src\LiveShelf\AgentEventService.cs"
+             Link="AgentEventService.cs" />
     <Compile Include="..\..\src\LiveShelf\AgentSession.cs"
              Link="AgentSession.cs" />
     <Compile Include="..\..\src\LiveShelf\AgentSessionRegistry.cs"
@@ -35,6 +37,8 @@
              Link="ShelvedWindow.cs" />
     <Compile Include="..\..\src\LiveShelf\AppIconExtractor.cs"
              Link="AppIconExtractor.cs" />
+    <Compile Include="..\..\src\LiveShelf\CrashLogger.cs"
+             Link="CrashLogger.cs" />
   </ItemGroup>
 
 </Project>

@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.IO;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using LiveShelf;
 
@@ -626,6 +627,57 @@ AssertTrue(
 AssertTrue(
     "codex hooks should call the non-failing command shim",
     hooksRoot?["PostToolUse"]?[0]?["hooks"]?[0]?["command"]?.GetValue<string>().Contains("shim.cmd", StringComparison.OrdinalIgnoreCase) == true);
+
+var boundedRegistry = new AgentSessionRegistry(() => []);
+for (var i = 0; i < 160; i++)
+{
+    boundedRegistry.ApplyEvent(new AgentEvent
+    {
+        Source = "codex",
+        SessionId = "bounded",
+        EventName = "PreToolUse",
+        ToolName = "apply_patch",
+        ToolUseId = $"tool-{i}",
+        FilePath = $@"C:\LiveShelfTest\file-{i}.cs",
+        ProcessId = 7000 + i,
+        ParentProcessIds = [8000 + i]
+    });
+}
+
+var boundedSession = boundedRegistry.Sessions.Single();
+AssertTrue(
+    "agent changed-file labels should stay bounded",
+    boundedSession.ChangedFilesSinceTurnStart.Count <= 128);
+AssertEqual(
+    "agent changed-file estimate should preserve total count beyond label cap",
+    160,
+    boundedSession.ChangedFileCountEstimate);
+AssertTrue(
+    "agent active tool ids should stay bounded",
+    boundedSession.ActiveToolUseIds.Count <= 64);
+AssertTrue(
+    "agent related process ids should stay bounded",
+    boundedSession.RelatedProcessIds.Count <= 128);
+
+using (var oversizedService = new AgentEventService())
+{
+    var receivedOversizedPayload = false;
+    oversizedService.EventReceived += (_, _) => receivedOversizedPayload = true;
+    var publishPayload = typeof(AgentEventService).GetMethod(
+        "PublishPayload",
+        BindingFlags.NonPublic | BindingFlags.Instance);
+    var oversizedPayload = JsonSerializer.Serialize(new
+    {
+        source = "codex",
+        sessionId = "oversized",
+        eventName = "SessionStart",
+        lastAssistantMessage = new string('x', AgentEventService.MaxPayloadChars)
+    });
+    publishPayload?.Invoke(oversizedService, [oversizedPayload]);
+    AssertTrue(
+        "oversized queued agent payloads should be skipped before deserialization",
+        !receivedOversizedPayload);
+}
 
 if (failures.Count > 0)
 {

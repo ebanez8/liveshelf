@@ -18,6 +18,9 @@ internal sealed class AgentSessionRegistry
     private const int TitleCwdMatchScore = 20;
     private const int SourceHintScore = 10;
     private const int ClearWinnerMargin = 50;
+    private const int MaxTrackedChangedFileLabels = 128;
+    private const int MaxTrackedToolUseIds = 64;
+    private const int MaxRelatedProcessIds = 128;
 
     private readonly Func<IReadOnlyList<ShelvedWindow>> _getCards;
     private readonly Dictionary<string, AgentSession> _sessionsByKey = new(StringComparer.OrdinalIgnoreCase);
@@ -529,7 +532,7 @@ internal sealed class AgentSessionRegistry
                 session.Status = GetToolStatus(agentEvent.ToolName);
                 if (!string.IsNullOrWhiteSpace(agentEvent.ToolUseId))
                 {
-                    session.ActiveToolUseIds.Add(agentEvent.ToolUseId);
+                    AddBounded(session.ActiveToolUseIds, agentEvent.ToolUseId, MaxTrackedToolUseIds);
                 }
 
                 AddChangedFilesFromEvent(session, agentEvent);
@@ -606,7 +609,7 @@ internal sealed class AgentSessionRegistry
     {
         if (!string.IsNullOrWhiteSpace(agentEvent.FilePath))
         {
-            session.ChangedFilesSinceTurnStart.Add(NormalizePathLabel(agentEvent.FilePath));
+            AddChangedFileLabel(session, agentEvent.FilePath);
         }
 
         AddPathsFromJson(session, agentEvent.ToolInput);
@@ -675,7 +678,7 @@ internal sealed class AgentSessionRegistry
             var path = value.GetString();
             if (!string.IsNullOrWhiteSpace(path))
             {
-                session.ChangedFilesSinceTurnStart.Add(NormalizePathLabel(path));
+                AddChangedFileLabel(session, path);
             }
 
             return;
@@ -702,7 +705,7 @@ internal sealed class AgentSessionRegistry
                      @"^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$",
                      RegexOptions.Multiline))
         {
-            session.ChangedFilesSinceTurnStart.Add(NormalizePathLabel(match.Groups[1].Value.Trim()));
+            AddChangedFileLabel(session, match.Groups[1].Value.Trim());
         }
     }
 
@@ -722,7 +725,35 @@ internal sealed class AgentSessionRegistry
     {
         if (processId > 0)
         {
-            session.RelatedProcessIds.Add(processId);
+            AddBounded(session.RelatedProcessIds, processId, MaxRelatedProcessIds);
+        }
+    }
+
+    private static void AddChangedFileLabel(AgentSession session, string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        var normalized = NormalizePathLabel(path);
+        if (session.ChangedFilesSinceTurnStart.Contains(normalized))
+        {
+            return;
+        }
+
+        session.ChangedFileCountEstimate = session.ChangedFilesSinceTurnStart.Count >= MaxTrackedChangedFileLabels &&
+            session.ChangedFileCountEstimate >= session.ChangedFilesSinceTurnStart.Count
+            ? session.ChangedFileCountEstimate + 1
+            : Math.Max(session.ChangedFileCountEstimate, session.ChangedFilesSinceTurnStart.Count + 1);
+        AddBounded(session.ChangedFilesSinceTurnStart, normalized, MaxTrackedChangedFileLabels);
+    }
+
+    private static void AddBounded<T>(HashSet<T> values, T value, int maxCount)
+    {
+        if (values.Count < maxCount)
+        {
+            values.Add(value);
         }
     }
 
