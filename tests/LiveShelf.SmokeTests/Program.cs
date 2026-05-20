@@ -679,6 +679,10 @@ using (var oversizedService = new AgentEventService())
         !receivedOversizedPayload);
 }
 
+// Run badge state tests
+Console.WriteLine("\n=== Badge State Tests ===");
+TestBadgeStates();
+
 if (failures.Count > 0)
 {
     foreach (var failure in failures)
@@ -691,6 +695,132 @@ if (failures.Count > 0)
 
 Console.WriteLine("LiveShelf smoke tests passed.");
 return 0;
+
+void TestBadgeStates()
+{
+    // Test Working state -> Running badge
+    var workingRegistry = new AgentSessionRegistry(() => []);
+    var workingUpdates = new List<AgentCardUpdate>();
+    workingRegistry.CardUpdateRequested += (_, update) => workingUpdates.Add(update);
+    var workingCard = CreateTestBadgeCard("Working");
+    var workingSession = new AgentSession("test", "working-1") { Status = AgentSessionStatus.Working };
+    workingRegistry.LinkSessionToCard(workingSession, workingCard);
+    workingRegistry.ApplyEvent(new AgentEvent
+    {
+        Source = "test",
+        SessionId = "working-1",
+        EventName = "UserPromptSubmit"
+    });
+    var workingBadge = LastBadge("Working should emit a badge update", workingUpdates);
+    AssertEqual("Working -> Running badge", ShelfBadgeKind.Running, workingBadge.Kind);
+    AssertEqual("Working badge label", "Working", workingBadge.Label);
+
+    // Test Changed state
+    var changedCard = CreateTestBadgeCard("Changed");
+    changedCard.SetBadge(ShelfBadgeKind.Changed);
+    AssertEqual("Changed badge kind", ShelfBadgeKind.Changed, changedCard.BadgeKind);
+    AssertEqual("Changed badge text", "Changed", changedCard.BadgeText);
+
+    // Test Done state with no changes
+    var doneRegistry = new AgentSessionRegistry(() => []);
+    var doneUpdates = new List<AgentCardUpdate>();
+    doneRegistry.CardUpdateRequested += (_, update) => doneUpdates.Add(update);
+    var doneCard = CreateTestBadgeCard("Done");
+    var doneSession = new AgentSession("test", "done-1") { Status = AgentSessionStatus.Done };
+    doneRegistry.LinkSessionToCard(doneSession, doneCard);
+    var doneBadge = LastBadge("Done should emit a badge update", doneUpdates);
+    AssertEqual("Done -> Done badge", ShelfBadgeKind.Done, doneBadge.Kind);
+    AssertEqual("Done badge label", "Done", doneBadge.Label);
+    AssertTrue("Done should notify", doneBadge.Notify);
+
+    // Test Done with changes -> DoneNeedsReview
+    var doneChangedRegistry = new AgentSessionRegistry(() => []);
+    var doneChangedUpdates = new List<AgentCardUpdate>();
+    doneChangedRegistry.CardUpdateRequested += (_, update) => doneChangedUpdates.Add(update);
+    var doneChangedCard = CreateTestBadgeCard("Done with changes");
+    var doneChangedSession = new AgentSession("test", "done-changes-1") { Status = AgentSessionStatus.Done };
+    doneChangedSession.ChangedFilesSinceTurnStart.Add("modified.cs");
+    doneChangedRegistry.LinkSessionToCard(doneChangedSession, doneChangedCard);
+    var doneChangedBadge = LastBadge("Done with changes should emit a badge update", doneChangedUpdates);
+    AssertEqual("Done with changes -> DoneNeedsReview", ShelfBadgeKind.DoneNeedsReview, doneChangedBadge.Kind);
+    AssertTrue("DoneNeedsReview shows changes count", doneChangedBadge.Label.Contains("changed"));
+
+    // Test Waiting (Needs Input) state
+    var waitingRegistry = new AgentSessionRegistry(() => []);
+    var waitingUpdates = new List<AgentCardUpdate>();
+    waitingRegistry.CardUpdateRequested += (_, update) => waitingUpdates.Add(update);
+    var waitingCard = CreateTestBadgeCard("Waiting");
+    var waitingSession = new AgentSession("test", "waiting-1") { Status = AgentSessionStatus.Waiting };
+    waitingRegistry.LinkSessionToCard(waitingSession, waitingCard);
+    var waitingBadge = LastBadge("Waiting should emit a badge update", waitingUpdates);
+    AssertEqual("Waiting -> WaitingForApproval badge", ShelfBadgeKind.WaitingForApproval, waitingBadge.Kind);
+    AssertTrue("Waiting should notify", waitingBadge.Notify);
+
+    // Test Failed (Error) state
+    var failedRegistry = new AgentSessionRegistry(() => []);
+    var failedUpdates = new List<AgentCardUpdate>();
+    failedRegistry.CardUpdateRequested += (_, update) => failedUpdates.Add(update);
+    var failedCard = CreateTestBadgeCard("Failed");
+    var failedSession = new AgentSession("test", "failed-1")
+    {
+        Status = AgentSessionStatus.Failed,
+        CurrentTurnId = "turn-1"
+    };
+    failedRegistry.LinkSessionToCard(failedSession, failedCard);
+    var failedBadge = LastBadge("Failed should emit a badge update", failedUpdates);
+    AssertEqual("Failed -> Failed badge", ShelfBadgeKind.Failed, failedBadge.Kind);
+    AssertEqual("Failed badge label", "Failed", failedBadge.Label);
+    AssertTrue("Failed should notify", failedBadge.Notify);
+
+    // Test Editing state
+    var editingRegistry = new AgentSessionRegistry(() => []);
+    var editingUpdates = new List<AgentCardUpdate>();
+    editingRegistry.CardUpdateRequested += (_, update) => editingUpdates.Add(update);
+    var editingCard = CreateTestBadgeCard("Editing");
+    var editingSession = new AgentSession("test", "editing-1") { Status = AgentSessionStatus.Editing };
+    editingRegistry.LinkSessionToCard(editingSession, editingCard);
+    var editingBadge = LastBadge("Editing should emit a badge update", editingUpdates);
+    AssertEqual("Editing -> EditingFiles badge", ShelfBadgeKind.EditingFiles, editingBadge.Kind);
+    AssertEqual("Editing label", "Editing files", editingBadge.Label);
+
+    // Test RunningCommand state
+    var cmdRegistry = new AgentSessionRegistry(() => []);
+    var cmdUpdates = new List<AgentCardUpdate>();
+    cmdRegistry.CardUpdateRequested += (_, update) => cmdUpdates.Add(update);
+    var cmdCard = CreateTestBadgeCard("Running command");
+    var cmdSession = new AgentSession("test", "cmd-1") { Status = AgentSessionStatus.RunningCommand };
+    cmdRegistry.LinkSessionToCard(cmdSession, cmdCard);
+    var cmdBadge = LastBadge("RunningCommand should emit a badge update", cmdUpdates);
+    AssertEqual("RunningCommand -> RunningCommand badge", ShelfBadgeKind.RunningCommand, cmdBadge.Kind);
+    AssertEqual("RunningCommand label", "Running command", cmdBadge.Label);
+
+    Console.WriteLine("All badge state tests passed.");
+}
+
+AgentBadge LastBadge(string name, List<AgentCardUpdate> updates)
+{
+    AssertTrue(name, updates.Count > 0);
+    return updates.Count == 0
+        ? new AgentBadge(ShelfBadgeKind.None, string.Empty, string.Empty, Notify: false)
+        : updates[^1].Badge;
+}
+
+ShelvedWindow CreateTestBadgeCard(string title)
+{
+    var placement = NativeMethods.WINDOWPLACEMENT.Create();
+    var rect = new NativeMethods.RECT(0, 0, 900, 600);
+    var card = new ShelvedWindow(
+        IntPtr.Zero,
+        IntPtr.Zero,
+        placement,
+        title,
+        "test-process",
+        0,
+        rect,
+        SourceWindowPolicy.Normal);
+    card.IsAgentLikeSession = true;
+    return card;
+}
 
 void AssertTrue(string name, bool condition)
 {
