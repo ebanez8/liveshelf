@@ -31,13 +31,12 @@ internal static class SourceWindowPolicyRules
         return NativeMethods.SWP_NOACTIVATE |
                NativeMethods.SWP_NOOWNERZORDER |
                NativeMethods.SWP_SHOWWINDOW |
-               NativeMethods.SWP_NOMOVE |
                NativeMethods.SWP_NOSIZE;
     }
 
     internal static int GetLivePreviewMoveToOriginalFlags()
     {
-        return GetLivePreviewParkFlags() & ~NativeMethods.SWP_NOMOVE;
+        return GetLivePreviewParkFlags();
     }
 
     internal static int GetNormalParkFlags()

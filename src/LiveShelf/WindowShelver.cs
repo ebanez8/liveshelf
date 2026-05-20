@@ -447,8 +447,9 @@ internal sealed class WindowShelver
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE);
 
         var flags = SourceWindowPolicyRules.GetLivePreviewParkFlags();
-        var x = 0;
-        var y = 0;
+        var parkedRect = GetParkedSourceRect(item.OriginalSourceRect);
+        var x = parkedRect.Left;
+        var y = parkedRect.Top;
         if (allowMoveToOriginal)
         {
             flags = SourceWindowPolicyRules.GetLivePreviewMoveToOriginalFlags();
@@ -468,7 +469,7 @@ internal sealed class WindowShelver
             NativeMethods.ThrowLastWin32Error("SetWindowPos");
         }
 
-        return item.OriginalSourceRect;
+        return allowMoveToOriginal ? item.OriginalSourceRect : parkedRect;
     }
 
     private static NativeMethods.RECT GetParkedSourceRect(NativeMethods.RECT currentRect)
@@ -511,6 +512,8 @@ internal sealed class WindowShelver
         var placement = item.OriginalPlacement;
         placement.Length = NativeMethods.WINDOWPLACEMENT.Create().Length;
 
+        RestoreLivePreviewSourceBounds(item, activate);
+
         var placementApplied = NativeMethods.SetWindowPlacement(item.SourceHwnd, ref placement);
         NativeMethods.ShowWindow(
             item.SourceHwnd,
@@ -522,6 +525,31 @@ internal sealed class WindowShelver
                 $"LiveShelf SetForegroundWindow restore hwnd=0x{item.SourceHwnd.ToInt64():X} card={item.Id}");
             NativeMethods.SetForegroundWindow(item.SourceHwnd);
         }
+    }
+
+    private static void RestoreLivePreviewSourceBounds(ShelvedWindow item, bool activate)
+    {
+        if (!SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy) ||
+            item.OriginalSourceRect.Width <= 0 ||
+            item.OriginalSourceRect.Height <= 0)
+        {
+            return;
+        }
+
+        var flags = NativeMethods.SWP_SHOWWINDOW | NativeMethods.SWP_NOOWNERZORDER;
+        if (!activate)
+        {
+            flags |= NativeMethods.SWP_NOACTIVATE;
+        }
+
+        NativeMethods.SetWindowPos(
+            item.SourceHwnd,
+            activate ? NativeMethods.HWND_TOP : NativeMethods.HWND_NOTOPMOST,
+            item.OriginalSourceRect.Left,
+            item.OriginalSourceRect.Top,
+            item.OriginalSourceRect.Width,
+            item.OriginalSourceRect.Height,
+            flags);
     }
 
     private static int GetRestoreShowCommand(int originalShowCommand)

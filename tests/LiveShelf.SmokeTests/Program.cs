@@ -110,15 +110,15 @@ AssertTrue(
     "live preview parking must preserve source width and height",
     (liveParkFlags & NativeMethods.SWP_NOSIZE) != 0);
 AssertTrue(
-    "live preview parking must not move browser/media source windows offscreen",
-    (liveParkFlags & NativeMethods.SWP_NOMOVE) != 0);
+    "live preview parking must move browser source windows offscreen",
+    (liveParkFlags & NativeMethods.SWP_NOMOVE) == 0);
 
 var liveMoveToOriginalFlags = SourceWindowPolicyRules.GetLivePreviewMoveToOriginalFlags();
 AssertTrue(
     "live preview policy transition must preserve source width and height",
     (liveMoveToOriginalFlags & NativeMethods.SWP_NOSIZE) != 0);
 AssertTrue(
-    "live preview policy transition may move back to the original rect",
+    "live preview policy transition may move back to the requested rect",
     (liveMoveToOriginalFlags & NativeMethods.SWP_NOMOVE) == 0);
 
 var host = new NativeMethods.RECT(0, 0, 200, 200);
