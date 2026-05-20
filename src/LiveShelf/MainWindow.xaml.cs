@@ -553,7 +553,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
             else
             {
+                RevealFullShelfAfterManualShelve();
                 PositionShelfWindow();
+                RefreshThumbnailsAfterLayout(ShelfAnimationMs);
             }
         }
         catch (Exception ex) when (ex is InvalidOperationException or Win32InteropException)
@@ -957,6 +959,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             _cardElements.Remove(item);
         }
+    }
+
+    private void FullShelfScroll_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        QueueThumbnailRefresh();
     }
 
     private void PreviewHost_Loaded(object sender, RoutedEventArgs e)
@@ -1486,6 +1493,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private void RevealFullShelfAfterManualShelve()
+    {
+        if (!_isRailMode &&
+            !_isRailTransitioning &&
+            HeaderSurface?.Opacity >= 0.99 &&
+            FullShelfScroll?.Opacity >= 0.99 &&
+            StatusSurface?.Opacity >= 0.99)
+        {
+            return;
+        }
+
+        ResetFullShelfVisualState();
+    }
+
     private static void ResetOpacityAnimation(UIElement? element, double opacity)
     {
         if (element is null)
@@ -1842,12 +1863,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         foreach (var item in Items)
         {
             UpdatePreviewFrame(item);
-            if (!TryGetPreviewBounds(item, out var thumbnailDestination))
+            if (!TryGetPreviewBounds(item, out var thumbnailHostBounds, out var visibleThumbnailBounds))
             {
+                _shelver.HideThumbnail(item);
                 continue;
             }
 
-            _shelver.UpdateThumbnailDestination(item, thumbnailDestination);
+            _shelver.UpdateThumbnailDestination(item, thumbnailHostBounds, visibleThumbnailBounds);
         }
     }
 
@@ -1859,10 +1881,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         UpdatePreviewFrame(item);
-        if (TryGetPreviewBounds(item, out var thumbnailDestination))
+        if (TryGetPreviewBounds(item, out var thumbnailHostBounds, out var visibleThumbnailBounds))
         {
-            _shelver.UpdateThumbnailDestination(item, thumbnailDestination);
+            _shelver.UpdateThumbnailDestination(item, thumbnailHostBounds, visibleThumbnailBounds);
+            return;
         }
+
+        _shelver.HideThumbnail(item);
     }
 
     private bool UpdatePreviewFrame(ShelvedWindow item)
@@ -1890,9 +1915,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private bool TryGetPreviewBounds(
         ShelvedWindow item,
-        out NativeMethods.RECT thumbnailDestination)
+        out NativeMethods.RECT thumbnailHostBounds,
+        out NativeMethods.RECT visibleThumbnailBounds)
     {
-        thumbnailDestination = default;
+        thumbnailHostBounds = default;
+        visibleThumbnailBounds = default;
 
         if (!_previewElements.TryGetValue(item, out var element) ||
             element.ActualWidth <= 0 ||
@@ -1902,13 +1929,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         Rect rootBounds;
+        Rect visibleRootBounds;
         try
         {
             var previewRect = GetPreviewThumbnailRect(element);
             rootBounds = element.TransformToAncestor(RootSurface)
                 .TransformBounds(previewRect);
+            visibleRootBounds = Rect.Intersect(rootBounds, GetThumbnailClipBounds());
         }
         catch (InvalidOperationException)
+        {
+            return false;
+        }
+
+        if (visibleRootBounds.IsEmpty || visibleRootBounds.Width <= 0 || visibleRootBounds.Height <= 0)
         {
             return false;
         }
@@ -1916,15 +1950,50 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var source = PresentationSource.FromVisual(this);
         var toDevice = source?.CompositionTarget?.TransformToDevice ?? Matrix.Identity;
 
-        var rootTopLeft = toDevice.Transform(rootBounds.TopLeft);
-        var rootBottomRight = toDevice.Transform(rootBounds.BottomRight);
-        thumbnailDestination = new NativeMethods.RECT(
-            (int)Math.Round(rootTopLeft.X),
-            (int)Math.Round(rootTopLeft.Y),
-            (int)Math.Round(rootBottomRight.X),
-            (int)Math.Round(rootBottomRight.Y));
+        thumbnailHostBounds = ToDeviceRect(rootBounds, toDevice);
+        visibleThumbnailBounds = ToDeviceRect(visibleRootBounds, toDevice);
 
         return true;
+    }
+
+    private Rect GetThumbnailClipBounds()
+    {
+        var rootBounds = new Rect(
+            0,
+            0,
+            Math.Max(0, RootSurface.ActualWidth),
+            Math.Max(0, RootSurface.ActualHeight));
+
+        if (FullShelfScroll is null ||
+            !FullShelfScroll.IsVisible ||
+            FullShelfScroll.ActualWidth <= 0 ||
+            FullShelfScroll.ActualHeight <= 0)
+        {
+            return rootBounds;
+        }
+
+        try
+        {
+            var scrollBounds = FullShelfScroll.TransformToAncestor(RootSurface)
+                .TransformBounds(new Rect(0, 0, FullShelfScroll.ActualWidth, FullShelfScroll.ActualHeight));
+            var clipped = Rect.Intersect(rootBounds, scrollBounds);
+            return clipped.IsEmpty ? rootBounds : clipped;
+        }
+        catch (InvalidOperationException)
+        {
+            return rootBounds;
+        }
+    }
+
+    private static NativeMethods.RECT ToDeviceRect(Rect bounds, Matrix toDevice)
+    {
+        var topLeft = toDevice.Transform(bounds.TopLeft);
+        var bottomRight = toDevice.Transform(bounds.BottomRight);
+        return new NativeMethods.RECT(
+            (int)Math.Round(topLeft.X),
+            (int)Math.Round(topLeft.Y),
+            (int)Math.Round(bottomRight.X),
+            (int)Math.Round(bottomRight.Y));
     }
 
     private static Rect GetPreviewThumbnailRect(FrameworkElement element)

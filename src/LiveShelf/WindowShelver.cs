@@ -252,7 +252,15 @@ internal sealed class WindowShelver
         }
     }
 
-    public void UpdateThumbnailDestination(ShelvedWindow item, NativeMethods.RECT destination)
+    public void HideThumbnail(ShelvedWindow item)
+    {
+        HideThumbnailPreview(item);
+    }
+
+    public void UpdateThumbnailDestination(
+        ShelvedWindow item,
+        NativeMethods.RECT hostBounds,
+        NativeMethods.RECT visibleBounds)
     {
         if (!item.IsSourceAlive)
         {
@@ -267,13 +275,13 @@ internal sealed class WindowShelver
 
         if (item.IsPreviewStatusOnly)
         {
-            HideThumbnail(item);
+            HideThumbnailPreview(item);
             return;
         }
 
         if (item.IsMediaCard)
         {
-            HideThumbnail(item);
+            HideThumbnailPreview(item);
             return;
         }
 
@@ -288,17 +296,35 @@ internal sealed class WindowShelver
             RecordBadPreviewSample(item, "Live preview source unavailable");
         }
 
+        var destination = hostBounds;
+        var sourceRect = default(NativeMethods.RECT);
+        if (hasSourceSize)
+        {
+            var placement = DwmThumbnailLayout.ComputeVisiblePlacement(hostBounds, visibleBounds, sourceSize);
+            if (placement is null)
+            {
+                HideThumbnailPreview(item);
+                return;
+            }
+
+            destination = placement.Value.Destination;
+            sourceRect = placement.Value.Source;
+        }
+        else if (!DwmThumbnailLayout.TryIntersect(hostBounds, visibleBounds, out destination))
+        {
+            HideThumbnailPreview(item);
+            return;
+        }
+
         var flags =
             NativeMethods.DWM_TNP_RECTDESTINATION |
             NativeMethods.DWM_TNP_VISIBLE |
             NativeMethods.DWM_TNP_OPACITY |
             NativeMethods.DWM_TNP_SOURCECLIENTAREAONLY;
 
-        var sourceRect = default(NativeMethods.RECT);
         if (hasSourceSize)
         {
             flags |= NativeMethods.DWM_TNP_RECTSOURCE;
-            sourceRect = DwmThumbnailLayout.GetFullSourceRect(sourceSize);
         }
 
         var properties = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
@@ -337,7 +363,7 @@ internal sealed class WindowShelver
         NativeMethods.DwmUpdateThumbnailProperties(item.ThumbnailHandle, ref properties);
     }
 
-    private static void HideThumbnail(ShelvedWindow item)
+    private static void HideThumbnailPreview(ShelvedWindow item)
     {
         if (item.ThumbnailHandle == IntPtr.Zero || !item.IsSourceAlive)
         {
@@ -1109,7 +1135,7 @@ internal sealed class WindowShelver
             session.Progress,
             hasReliableProgress,
             session.CanTogglePlayPause);
-        HideThumbnail(item);
+        HideThumbnailPreview(item);
 
         item.SetSourceWindowPolicy(SourceWindowPolicyRules.Classify(item.ProcessName, item.IsMediaCard));
         if (item.SourceWindowPolicy != previousPolicy)

@@ -141,6 +141,27 @@ AssertTrue(
     "tiny top-left source size should be treated as a broken live preview",
     DwmThumbnailLayout.IsSeverelyWrongSourceSize(tinySource, originalBrowserRect));
 
+var clippedPlacement = DwmThumbnailLayout.ComputeVisiblePlacement(
+    new NativeMethods.RECT(0, 0, 200, 200),
+    new NativeMethods.RECT(0, 80, 200, 200),
+    wideSource);
+AssertTrue(
+    "visible placement should remain available when a preview is clipped by scrolling",
+    clippedPlacement is not null);
+AssertEqual(
+    "visible placement should crop the destination instead of stretching into the clipped frame",
+    76,
+    clippedPlacement!.Value.Destination.Height);
+AssertIntBetween(
+    "visible placement should crop the source from the top by the same visible ratio",
+    clippedPlacement.Value.Source.Top,
+    346,
+    348);
+AssertEqual(
+    "visible placement should keep the full source width for a full-width scroll clip",
+    wideSource.Width,
+    clippedPlacement.Value.Source.Width);
+
 var sourceOnlyCard = CreateShelvedCard(
     "stack - Codex",
     "WindowsTerminal",

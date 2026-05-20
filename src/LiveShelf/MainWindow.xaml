@@ -301,6 +301,7 @@
                           VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled"
                           CanContentScroll="False"
+                          ScrollChanged="FullShelfScroll_ScrollChanged"
                           Visibility="{Binding FullShelfVisibility}">
                 <ItemsControl ItemsSource="{Binding Items}">
                     <ItemsControl.ItemTemplate>
