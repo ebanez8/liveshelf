@@ -2700,8 +2700,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         SetFullShelfOpacity(1);
         AnimateFullShelfOpacity(0, FullShelfFadeAnimationMs);
         AnimateDouble(this, FrameworkElement.WidthProperty, RailWidth, RailCollapseAnimationMs);
-        var right = _monitor.WorkArea.Right;
-        AnimateDouble(this, Window.LeftProperty, right - RailWidth, RailCollapseAnimationMs, () =>
+        var workAreaRightDip = ScalePixelToDip(_monitor.WorkArea.Right, _monitor.DpiX);
+        AnimateDouble(this, Window.LeftProperty, workAreaRightDip - RailWidth, RailCollapseAnimationMs, () =>
         {
             if (railGeneration != _railTransitionGeneration)
             {
@@ -2735,9 +2735,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         OnPropertyChanged(nameof(RailVisibility));
         SetWindowThumbnailsVisible(true);
         var targetWidth = GetTargetShelfWidth();
-        var right = _monitor.WorkArea.Right;
+        var workAreaRightDip = ScalePixelToDip(_monitor.WorkArea.Right, _monitor.DpiX);
         AnimateDouble(this, FrameworkElement.WidthProperty, targetWidth, RailExpandAnimationMs);
-        AnimateDouble(this, Window.LeftProperty, right - targetWidth, RailExpandAnimationMs, () =>
+        AnimateDouble(this, Window.LeftProperty, workAreaRightDip - targetWidth, RailExpandAnimationMs, () =>
         {
             if (railGeneration != _railTransitionGeneration)
             {
