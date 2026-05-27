@@ -5,6 +5,8 @@ namespace LiveShelf;
 
 public partial class App : Application
 {
+    private MultiMonitorShelfManager? _coordinator;
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -14,6 +16,8 @@ public partial class App : Application
         TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
 
         ShelvedWindowRegistry.RestoreRegisteredWindows();
+        _coordinator = new MultiMonitorShelfManager();
+        _coordinator.Start();
     }
 
     private static void App_DispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
@@ -23,8 +27,9 @@ public partial class App : Application
         if (Current.MainWindow is MainWindow window)
         {
             window.ReportRuntimeError(e.Exception);
-            window.RestoreShelvedWindowsForShutdown();
         }
+
+        (Current as App)?._coordinator?.RestoreAll();
 
         e.Handled = true;
         Current.Shutdown(1);
@@ -57,17 +62,15 @@ public partial class App : Application
             if (app.MainWindow is MainWindow window)
             {
                 window.ReportRuntimeError(e.Exception);
-                window.RestoreShelvedWindowsForShutdown();
             }
+
+            (app as App)?._coordinator?.RestoreAll();
         });
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
-        if (MainWindow is MainWindow window)
-        {
-            window.RestoreShelvedWindowsForShutdown();
-        }
+        _coordinator?.Dispose();
 
         base.OnExit(e);
     }

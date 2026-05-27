@@ -9,6 +9,8 @@ internal static class NativeMethods
 {
     internal const int WM_HOTKEY = 0x0312;
     internal const int WM_NCHITTEST = 0x0084;
+    internal const int WM_DISPLAYCHANGE = 0x007E;
+    internal const int WM_DPICHANGED = 0x02E0;
     internal const int WM_CLOSE = 0x0010;
     internal const int WM_SETFOCUS = 0x0007;
     internal const int WM_KEYDOWN = 0x0100;
@@ -59,9 +61,12 @@ internal static class NativeMethods
     internal const int SM_YVIRTUALSCREEN = 77;
     internal const int SM_CXVIRTUALSCREEN = 78;
     internal const int SM_CYVIRTUALSCREEN = 79;
+    internal const uint MONITOR_DEFAULTTONEAREST = 2;
+    internal const int MONITORINFOF_PRIMARY = 1;
 
     internal const int SWP_NOSIZE = 0x0001;
     internal const int SWP_NOMOVE = 0x0002;
+    internal const int SWP_NOZORDER = 0x0004;
     internal const int SWP_NOACTIVATE = 0x0010;
     internal const int SWP_SHOWWINDOW = 0x0040;
     internal const int SWP_NOOWNERZORDER = 0x0200;
@@ -174,6 +179,30 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern int GetSystemMetrics(int nIndex);
+
+    internal delegate bool MonitorEnumProc(
+        IntPtr hMonitor,
+        IntPtr hdcMonitor,
+        ref RECT lprcMonitor,
+        IntPtr dwData);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool EnumDisplayMonitors(
+        IntPtr hdc,
+        IntPtr lprcClip,
+        MonitorEnumProc lpfnEnum,
+        IntPtr dwData);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+    [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFOEX lpmi);
+
+    [DllImport("shcore.dll")]
+    internal static extern int GetDpiForMonitor(IntPtr hmonitor, int dpiType, out uint dpiX, out uint dpiY);
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongW", SetLastError = true)]
     internal static extern int GetWindowLong(IntPtr hWnd, int nIndex);
@@ -355,7 +384,7 @@ internal static class NativeMethods
     {
         var exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
         exStyle &= ~WS_EX_APPWINDOW;
-        exStyle |= WS_EX_TOOLWINDOW;
+        exStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
         SetWindowLong(hwnd, GWL_EXSTYLE, exStyle);
     }
 
@@ -366,6 +395,68 @@ internal static class NativeMethods
         var width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         var height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
         return new RECT(left, top, left + width, top + height);
+    }
+
+    internal static IReadOnlyList<DisplayMonitor> GetDisplayMonitors()
+    {
+        var monitors = new List<DisplayMonitor>();
+        EnumDisplayMonitors(
+            IntPtr.Zero,
+            IntPtr.Zero,
+            (IntPtr hMonitor, IntPtr hdcMonitor, ref RECT monitorRect, IntPtr data) =>
+            {
+                var info = MONITORINFOEX.Create();
+                if (GetMonitorInfo(hMonitor, ref info))
+                {
+                    var dpiX = 96u;
+                    var dpiY = 96u;
+                    try
+                    {
+                        GetDpiForMonitor(hMonitor, 0, out dpiX, out dpiY);
+                    }
+                    catch
+                    {
+                        dpiX = 96u;
+                        dpiY = 96u;
+                    }
+
+                    var deviceName = info.szDevice ?? string.Empty;
+                    monitors.Add(new DisplayMonitor(
+                        hMonitor,
+                        deviceName,
+                        info.rcMonitor,
+                        info.rcWork,
+                        (info.dwFlags & MONITORINFOF_PRIMARY) != 0,
+                        dpiX,
+                        dpiY,
+                        BuildMonitorKey(deviceName, info.rcMonitor, (info.dwFlags & MONITORINFOF_PRIMARY) != 0, dpiX, dpiY)));
+                }
+
+                return true;
+            },
+            IntPtr.Zero);
+
+        if (monitors.Count == 0)
+        {
+            var virtualScreen = GetVirtualScreenRect();
+            monitors.Add(new DisplayMonitor(
+                IntPtr.Zero,
+                string.Empty,
+                virtualScreen,
+                virtualScreen,
+                true,
+                96,
+                96,
+                BuildMonitorKey(string.Empty, virtualScreen, true, 96, 96)));
+        }
+
+        return monitors;
+    }
+
+    private static string BuildMonitorKey(string deviceName, RECT bounds, bool isPrimary, uint dpiX, uint dpiY)
+    {
+        var device = string.IsNullOrWhiteSpace(deviceName) ? "unknown" : deviceName;
+        return $"{device}:{bounds.Left},{bounds.Top},{bounds.Right},{bounds.Bottom}:{(isPrimary ? 1 : 0)}:{dpiX}x{dpiY}";
     }
 
     internal static RECT FitInside(RECT bounds, SIZE sourceSize)
@@ -463,6 +554,26 @@ internal static class NativeMethods
             return new WINDOWPLACEMENT
             {
                 Length = Marshal.SizeOf<WINDOWPLACEMENT>()
+            };
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct MONITORINFOEX
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public int dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string szDevice;
+
+        public static MONITORINFOEX Create()
+        {
+            return new MONITORINFOEX
+            {
+                cbSize = Marshal.SizeOf<MONITORINFOEX>(),
+                szDevice = string.Empty
             };
         }
     }

@@ -141,6 +141,46 @@ AssertTrue(
     "tiny top-left source size should be treated as a broken live preview",
     DwmThumbnailLayout.IsSeverelyWrongSourceSize(tinySource, originalBrowserRect));
 
+var leftMonitor = new DisplayMonitor(
+    new IntPtr(1),
+    @"\\.\DISPLAY1",
+    new NativeMethods.RECT(0, 0, 1920, 1080),
+    new NativeMethods.RECT(0, 0, 1920, 1040),
+    true,
+    96,
+    96,
+    "display-1");
+var rightMonitor = new DisplayMonitor(
+    new IntPtr(2),
+    @"\\.\DISPLAY2",
+    new NativeMethods.RECT(1920, 0, 3840, 1080),
+    new NativeMethods.RECT(1920, 0, 3840, 1040),
+    false,
+    144,
+    144,
+    "display-2");
+var monitors = new[] { leftMonitor, rightMonitor };
+AssertEqual(
+    "window mostly on left monitor should use left shelf",
+    leftMonitor.Handle,
+    MonitorGeometry.FindBestMonitor(new NativeMethods.RECT(100, 100, 1500, 900), monitors)!.Value.Handle);
+AssertEqual(
+    "window mostly on right monitor should use right shelf",
+    rightMonitor.Handle,
+    MonitorGeometry.FindBestMonitor(new NativeMethods.RECT(2100, 100, 3600, 900), monitors)!.Value.Handle);
+AssertEqual(
+    "spanning window should use monitor with largest visible area",
+    rightMonitor.Handle,
+    MonitorGeometry.FindBestMonitor(new NativeMethods.RECT(1600, 100, 3400, 900), monitors)!.Value.Handle);
+AssertEqual(
+    "offscreen window should fall back to primary monitor",
+    leftMonitor.Handle,
+    MonitorGeometry.FindBestMonitor(new NativeMethods.RECT(5000, 100, 5600, 900), monitors)!.Value.Handle);
+AssertEqual(
+    "hidden shelves should park beyond the virtual desktop, not the source monitor",
+    3858,
+    MonitorGeometry.GetHiddenShelfLeft(new NativeMethods.RECT(0, 0, 3840, 1080), 18));
+
 var clippedPlacement = DwmThumbnailLayout.ComputeVisiblePlacement(
     new NativeMethods.RECT(0, 0, 200, 200),
     new NativeMethods.RECT(0, 80, 200, 200),

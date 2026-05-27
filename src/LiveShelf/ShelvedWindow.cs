@@ -38,6 +38,8 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     private string _suspectedAgent = string.Empty;
     private string _agentDisplayTitle = string.Empty;
     private string _exePath = string.Empty;
+    private string _originalMonitorKey = string.Empty;
+    private string _currentShelfMonitorKey = string.Empty;
     private ImageSource? _appIcon;
     private string _mediaPlayPauseText = "Play";
     private string _previewStatusReason = string.Empty;
@@ -51,6 +53,7 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     private bool _hasMediaProgress;
     private bool _canToggleMediaPlayback;
     private bool _isPreviewStatusOnly;
+    private bool _isThumbnailVisible = true;
 
     internal ShelvedWindow(
         IntPtr sourceHwnd,
@@ -80,6 +83,36 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
 
     internal IntPtr ThumbnailHandle { get; set; }
 
+    internal IntPtr ThumbnailShelfHwnd { get; set; }
+
+    internal IntPtr MonitorHandle { get; set; }
+
+    internal NativeMethods.RECT MonitorBounds { get; set; }
+
+    internal NativeMethods.RECT LastCardBounds { get; set; }
+
+    internal NativeMethods.RECT LastThumbnailDestination { get; set; }
+
+    internal int LastDwmRegisterResult { get; set; }
+
+    internal int LastDwmQueryResult { get; set; }
+
+    internal int LastDwmUpdateResult { get; set; }
+
+    internal bool IsShelvingTransactionPending { get; set; }
+
+    internal string OriginalMonitorKey
+    {
+        get => _originalMonitorKey;
+        set => _originalMonitorKey = value;
+    }
+
+    internal string CurrentShelfMonitorKey
+    {
+        get => _currentShelfMonitorKey;
+        set => _currentShelfMonitorKey = value;
+    }
+
     internal NativeMethods.WINDOWPLACEMENT OriginalPlacement { get; }
 
     internal NativeMethods.RECT OriginalSourceRect { get; }
@@ -95,6 +128,12 @@ public sealed class ShelvedWindow : INotifyPropertyChanged
     internal NativeMethods.SIZE LastThumbnailSourceSize { get; set; }
 
     internal DateTime LastPreviewRecoveryUtc { get; set; }
+
+    internal bool IsThumbnailVisible
+    {
+        get => _isThumbnailVisible;
+        set => _isThumbnailVisible = value;
+    }
 
     internal string MediaSessionId => _mediaSessionId;
 

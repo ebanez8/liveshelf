@@ -12,7 +12,6 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
-using Microsoft.Win32;
 using Brush = System.Windows.Media.Brush;
 using Button = System.Windows.Controls.Button;
 using Color = System.Windows.Media.Color;
@@ -28,11 +27,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const int ShelfHotkeyId = 0x5153;
     private const int ToggleShelfHotkeyId = 0x4848;
     private const int EmergencyRestoreHotkeyId = 0x5252;
+    private const int DebugShowShelvesHotkeyId = 0x4444;
     private const int HotkeyModifiers = NativeMethods.MOD_ALT | NativeMethods.MOD_CONTROL | NativeMethods.MOD_NOREPEAT;
     private const int EmergencyRestoreHotkeyModifiers = NativeMethods.MOD_ALT | NativeMethods.MOD_CONTROL | NativeMethods.MOD_SHIFT | NativeMethods.MOD_NOREPEAT;
     private const int ShelfHotkeyVirtualKey = 0x53; // S
     private const int ToggleShelfHotkeyVirtualKey = 0x48; // H
     private const int EmergencyRestoreHotkeyVirtualKey = 0x52; // R
+    private const int DebugShowShelvesHotkeyVirtualKey = 0x44; // D
 
     private const double ShelfWidth = 256;
     private const double PeekShelfWidth = 440;
@@ -73,6 +74,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private static readonly Brush AgentFailedBrush = new SolidColorBrush(Color.FromRgb(238, 105, 117));
 
     private readonly ObservableCollection<ShelvedWindow> _items = [];
+    private readonly MultiMonitorShelfManager _coordinator;
+    private DisplayMonitor _monitor;
+    private readonly bool _isHotkeyHost;
     private readonly Dictionary<ShelvedWindow, FrameworkElement> _cardElements = [];
     private readonly Dictionary<ShelvedWindow, FrameworkElement> _previewHostElements = [];
     private readonly Dictionary<ShelvedWindow, FrameworkElement> _previewElements = [];
@@ -112,9 +116,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private string _agentConnectionToolTip = "Connect Codex or Claude Code hooks";
     private Brush _agentConnectionBrush = AgentIdleBrush;
 
-    public MainWindow()
+    internal MainWindow(DisplayMonitor monitor, MultiMonitorShelfManager coordinator, bool isHotkeyHost)
     {
+        _monitor = monitor;
+        _coordinator = coordinator;
+        _isHotkeyHost = isHotkeyHost;
+
         InitializeComponent();
+        Opacity = 0;
+        Left = ScalePixelToDip(GetHiddenShelfLeft(), monitor.DpiX);
+        Top = ScalePixelToDip(monitor.WorkArea.Top, monitor.DpiY);
+        Width = ShelfWidth;
+        Height = ScalePixelToDip(monitor.WorkArea.Height, monitor.DpiY);
         DataContext = this;
         Items.CollectionChanged += Items_CollectionChanged;
 
@@ -140,6 +153,266 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public ObservableCollection<ShelvedWindow> Items => _items;
+
+    internal DisplayMonitor Monitor => _monitor;
+
+    internal IntPtr WindowHandle => _windowHandle;
+
+    internal void EnsureHiddenHandle()
+    {
+        if (_windowHandle != IntPtr.Zero)
+        {
+            return;
+        }
+
+        new WindowInteropHelper(this).EnsureHandle();
+    }
+
+    internal void EnsureReadyForThumbnailRegistration()
+    {
+        if (!IsVisible)
+        {
+            Show();
+        }
+
+        PositionShelfWindow(animate: false);
+        ApplyRoundedWindowRegion();
+    }
+
+    internal bool ForceVisibleForShelving(out NativeMethods.RECT shelfBounds, out string reason)
+    {
+        reason = string.Empty;
+        shelfBounds = default;
+        if (!IsVisible)
+        {
+            Show();
+        }
+
+        ResetFullShelfVisualState();
+        _isShelfHidden = false;
+        _isRailMode = false;
+        _isRailTransitioning = false;
+        OnPropertyChanged(nameof(FullShelfVisibility));
+        OnPropertyChanged(nameof(RailVisibility));
+
+        var widthPx = Math.Max(1, ScaleDipToPixel(ShelfWidth, _monitor.DpiX));
+        var leftPx = _monitor.WorkArea.Right - widthPx;
+        var heightPx = Math.Max(1, _monitor.WorkArea.Height);
+        Left = ScalePixelToDip(leftPx, _monitor.DpiX);
+        Top = ScalePixelToDip(_monitor.WorkArea.Top, _monitor.DpiY);
+        Width = ShelfWidth;
+        Height = ScalePixelToDip(heightPx, _monitor.DpiY);
+        Opacity = 1;
+        RootSurface.IsHitTestVisible = true;
+        UpdateLayout();
+
+        NativeMethods.ShowWindow(_windowHandle, NativeMethods.SW_SHOWNOACTIVATE);
+        if (!NativeMethods.SetWindowPos(
+                _windowHandle,
+                NativeMethods.HWND_TOPMOST,
+                leftPx,
+                _monitor.WorkArea.Top,
+                widthPx,
+                heightPx,
+                NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW))
+        {
+            reason = "SetWindowPos failed for shelf window";
+            return false;
+        }
+
+        if (!NativeMethods.GetWindowRect(_windowHandle, out shelfBounds))
+        {
+            reason = "GetWindowRect failed for shelf window";
+            return false;
+        }
+
+        if (!NativeMethods.IsWindow(_windowHandle) ||
+            !NativeMethods.IsWindowVisible(_windowHandle) ||
+            shelfBounds.Width <= 0 ||
+            shelfBounds.Height <= 0 ||
+            Opacity <= 0.01)
+        {
+            reason = "Shelf window is not visibly ready";
+            return false;
+        }
+
+        return true;
+    }
+
+    internal bool ForceRenderShelvingCard(
+        ShelvedWindow item,
+        out NativeMethods.RECT cardBounds,
+        out string reason)
+    {
+        reason = string.Empty;
+        cardBounds = default;
+        if (!ForceVisibleForShelving(out _, out reason))
+        {
+            return false;
+        }
+
+        UpdateLayout();
+        Dispatcher.Invoke(() => { }, DispatcherPriority.Render);
+
+        if (!_cardElements.TryGetValue(item, out var card) ||
+            card.ActualWidth <= 1 ||
+            card.ActualHeight <= 1 ||
+            card.Opacity <= 0.01 ||
+            !card.IsVisible)
+        {
+            reason = "Card did not render visibly";
+            return false;
+        }
+
+        var topLeft = card.PointToScreen(new Point(0, 0));
+        var bottomRight = card.PointToScreen(new Point(card.ActualWidth, card.ActualHeight));
+        cardBounds = new NativeMethods.RECT(
+            (int)Math.Round(topLeft.X),
+            (int)Math.Round(topLeft.Y),
+            (int)Math.Round(bottomRight.X),
+            (int)Math.Round(bottomRight.Y));
+        item.LastCardBounds = cardBounds;
+        return true;
+    }
+
+    internal int UpdateThumbnailDestinationForShelving(ShelvedWindow item)
+    {
+        UpdatePreviewFrame(item);
+        if (!TryGetPreviewBounds(item, out var thumbnailHostBounds, out var visibleThumbnailBounds))
+        {
+            _shelver?.HideThumbnail(item);
+            return unchecked((int)0x80004005);
+        }
+
+        return _shelver?.UpdateThumbnailDestination(item, thumbnailHostBounds, visibleThumbnailBounds)
+               ?? unchecked((int)0x80004005);
+    }
+
+    internal void ShowForDebug()
+    {
+        if (!IsVisible)
+        {
+            Show();
+        }
+
+        ResetFullShelfVisualState();
+        _isShelfHidden = false;
+        _isRailMode = false;
+        _isRailTransitioning = false;
+        OnPropertyChanged(nameof(FullShelfVisibility));
+        OnPropertyChanged(nameof(RailVisibility));
+        StatusMessage = $"Debug {Monitor.Key} hwnd=0x{WindowHandle.ToInt64():X}";
+        ForceVisibleForShelving(out _, out _);
+    }
+
+    internal void SetMonitor(DisplayMonitor monitor)
+    {
+        _monitor = monitor;
+        PositionShelfWindow(animate: false);
+        QueueThumbnailRefresh();
+    }
+
+    internal void AssignMonitorForShelving(DisplayMonitor monitor)
+    {
+        _monitor = monitor;
+    }
+
+    internal void SetShelver(WindowShelver shelver)
+    {
+        if (_shelver is not null)
+        {
+            return;
+        }
+
+        _shelver = shelver;
+        _shelver.StatusChanged += (_, message) => StatusMessage = message;
+        _shelver.ThumbnailRefreshRequested += (_, _) => QueueThumbnailRefresh();
+        _shelver.AttentionRequested += (_, item) =>
+        {
+            if (Items.Contains(item))
+            {
+                Dispatcher.InvokeAsync(() => RunAttentionAlert(item));
+            }
+        };
+        _shelver.AgentCompletionRequested += (_, item) =>
+        {
+            if (!Items.Contains(item))
+            {
+                return;
+            }
+
+            if (_isShelfHidden)
+            {
+                SetShelfHidden(false);
+                Dispatcher.InvokeAsync(() => RunAttentionAlert(item), DispatcherPriority.Loaded);
+                return;
+            }
+
+            if (_isRailMode)
+            {
+                ExpandFromRail();
+                Dispatcher.InvokeAsync(() => RunAttentionAlert(item), DispatcherPriority.Loaded);
+                return;
+            }
+
+            Dispatcher.InvokeAsync(() => RunAttentionAlert(item), DispatcherPriority.Loaded);
+        };
+    }
+
+    internal void RevealAfterManualShelve(ShelvedWindow item)
+    {
+        if (!Items.Contains(item))
+        {
+            return;
+        }
+
+        EnsureVisibleForItems();
+
+        if (_isShelfHidden)
+        {
+            SetShelfHidden(false);
+        }
+        else
+        {
+            RevealFullShelfAfterManualShelve();
+            PositionShelfWindow();
+            RefreshThumbnailsAfterLayout(ShelfAnimationMs);
+        }
+    }
+
+    internal void EnsureVisibleForItems()
+    {
+        if (!IsVisible)
+        {
+            Show();
+        }
+
+        PositionShelfWindow(animate: false);
+        QueueThumbnailRefresh();
+    }
+
+    internal void ParkWhenEmpty()
+    {
+        if (Items.Count != 0)
+        {
+            return;
+        }
+
+        PositionShelfWindow(animate: false);
+    }
+
+    private void SetWindowThumbnailsVisible(bool visible)
+    {
+        if (_shelver is null)
+        {
+            return;
+        }
+
+        foreach (var item in Items)
+        {
+            _shelver.SetThumbnailVisible(item, visible);
+        }
+    }
 
     public int ItemCount => Items.Count;
 
@@ -184,53 +457,36 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             // Mica/acrylic not available, shelf stays opaque
         }
 
-        _shelver = new WindowShelver(_windowHandle, _items);
-        _shelver.StatusChanged += (_, message) => StatusMessage = message;
-        _shelver.ThumbnailRefreshRequested += (_, _) => QueueThumbnailRefresh();
-        _shelver.AttentionRequested += (_, item) => Dispatcher.InvokeAsync(() => RunAttentionAlert(item));
-        _shelver.AgentCompletionRequested += (_, item) =>
-        {
-            if (_isShelfHidden)
-            {
-                SetShelfHidden(false);
-                Dispatcher.InvokeAsync(() => RunAttentionAlert(item), DispatcherPriority.Loaded);
-                return;
-            }
-
-            if (_isRailMode)
-            {
-                ExpandFromRail();
-                Dispatcher.InvokeAsync(() => RunAttentionAlert(item), DispatcherPriority.Loaded);
-                return;
-            }
-
-            Dispatcher.InvokeAsync(() => RunAttentionAlert(item), DispatcherPriority.Loaded);
-        };
-
         RefreshAgentConnectionStatus();
-        RegisterHotkeys();
+        if (_isHotkeyHost)
+        {
+            RegisterHotkeys();
+        }
+
+        _coordinator.RegisterShelfWindow(this);
+        _dragShelfTimer.Start();
         PositionShelfWindow(animate: false);
         ApplyRoundedWindowRegion();
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
-        SystemEvents.DisplaySettingsChanged += SystemEvents_DisplaySettingsChanged;
-        _dragShelfTimer.Start();
         PositionShelfWindow(animate: false);
         QueueThumbnailRefresh();
     }
 
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
-        SystemEvents.DisplaySettingsChanged -= SystemEvents_DisplaySettingsChanged;
         StopThumbnailAnimationRefresh();
-        NativeMethods.UnregisterHotKey(_windowHandle, ShelfHotkeyId);
-        NativeMethods.UnregisterHotKey(_windowHandle, ToggleShelfHotkeyId);
-        NativeMethods.UnregisterHotKey(_windowHandle, EmergencyRestoreHotkeyId);
+        if (_isHotkeyHost)
+        {
+            NativeMethods.UnregisterHotKey(_windowHandle, ShelfHotkeyId);
+            NativeMethods.UnregisterHotKey(_windowHandle, ToggleShelfHotkeyId);
+            NativeMethods.UnregisterHotKey(_windowHandle, EmergencyRestoreHotkeyId);
+            NativeMethods.UnregisterHotKey(_windowHandle, DebugShowShelvesHotkeyId);
+        }
         _dragShelfTimer.Stop();
         _source?.RemoveHook(WndProc);
-        RestoreShelvedWindowsForShutdown();
     }
 
     internal void RestoreShelvedWindowsForShutdown()
@@ -241,7 +497,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         _hasRestoredShelvedWindowsForShutdown = true;
-        _shelver?.RestoreAll();
+        _coordinator.RestoreAll();
     }
 
     private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -292,12 +548,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         QueueThumbnailRefresh();
     }
 
-    private void SystemEvents_DisplaySettingsChanged(object? sender, EventArgs e)
-    {
-        PositionShelfWindow(animate: false);
-        QueueThumbnailRefresh();
-    }
-
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         if (msg == NativeMethods.WM_NCHITTEST)
@@ -308,6 +558,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             LogHitTest(screenX, screenY, inside, hitArea);
             handled = true;
             return new IntPtr(inside ? NativeMethods.HTCLIENT : NativeMethods.HTTRANSPARENT);
+        }
+
+        if (msg == NativeMethods.WM_DISPLAYCHANGE)
+        {
+            _coordinator.RefreshMonitors();
+            QueueThumbnailRefresh();
+            return IntPtr.Zero;
+        }
+
+        if (msg == NativeMethods.WM_DPICHANGED)
+        {
+            PositionShelfWindow(animate: false);
+            ApplyRoundedWindowRegion();
+            RefreshThumbnailsAfterLayout(0);
+            return IntPtr.Zero;
         }
 
         if (msg != NativeMethods.WM_HOTKEY)
@@ -334,6 +599,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             handled = true;
             RestoreShelvedWindowsForShutdown();
             StatusMessage = "Restored shelved windows";
+            return IntPtr.Zero;
+        }
+
+        if (wParam.ToInt32() == DebugShowShelvesHotkeyId)
+        {
+            handled = true;
+            _coordinator.ShowAllShelvesForDebug();
             return IntPtr.Zero;
         }
 
@@ -521,8 +793,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             EmergencyRestoreHotkeyId,
             EmergencyRestoreHotkeyModifiers,
             EmergencyRestoreHotkeyVirtualKey);
+        var debugShowShelvesHotkeyRegistered = NativeMethods.RegisterHotKey(
+            _windowHandle,
+            DebugShowShelvesHotkeyId,
+            EmergencyRestoreHotkeyModifiers,
+            DebugShowShelvesHotkeyVirtualKey);
 
-        if (shelfHotkeyRegistered && toggleHotkeyRegistered && emergencyRestoreHotkeyRegistered)
+        if (shelfHotkeyRegistered &&
+            toggleHotkeyRegistered &&
+            emergencyRestoreHotkeyRegistered &&
+            debugShowShelvesHotkeyRegistered)
         {
             return;
         }
@@ -539,24 +819,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void ShelfForegroundWindow()
     {
-        if (_shelver is null)
+        if (_coordinator.Shelver is null)
         {
             return;
         }
 
         try
         {
-            _shelver.ShelfForegroundWindow();
-            if (_isShelfHidden)
-            {
-                SetShelfHidden(false);
-            }
-            else
-            {
-                RevealFullShelfAfterManualShelve();
-                PositionShelfWindow();
-                RefreshThumbnailsAfterLayout(ShelfAnimationMs);
-            }
+            var item = _coordinator.Shelver.ShelfForegroundWindow();
+            _coordinator.RevealShelvedItem(item);
         }
         catch (Exception ex) when (ex is InvalidOperationException or Win32InteropException)
         {
@@ -942,11 +1213,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         _cardElements[item] = card;
-        SetCardInitialTransform(card);
+        if (item.IsShelvingTransactionPending)
+        {
+            card.Opacity = 1;
+            card.RenderTransform = Transform.Identity;
+        }
+        else
+        {
+            SetCardInitialTransform(card);
+        }
+
         if (card is Border border)
         {
             border.Background = new SolidColorBrush(CardBackgroundColor);
             border.BorderBrush = new SolidColorBrush(CardBorderColor);
+        }
+
+        if (item.IsShelvingTransactionPending)
+        {
+            return;
         }
 
         AnimateDouble(card, UIElement.OpacityProperty, 1, CardEntryAnimationMs);
@@ -1096,13 +1381,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ShelfForegroundWindow();
     }
 
-    private static bool IsPointInDragShelfHotZone(NativeMethods.POINT point)
+    private bool IsPointInDragShelfHotZone(NativeMethods.POINT point)
     {
-        var virtualScreen = NativeMethods.GetVirtualScreenRect();
-        return point.X >= virtualScreen.Right - DragShelfHotZoneSize &&
-               point.X <= virtualScreen.Right &&
-               point.Y >= virtualScreen.Bottom - DragShelfHotZoneSize &&
-               point.Y <= virtualScreen.Bottom;
+        var bounds = _monitor.WorkArea;
+        return point.X >= bounds.Right - DragShelfHotZoneSize &&
+               point.X <= bounds.Right &&
+               point.Y >= bounds.Bottom - DragShelfHotZoneSize &&
+               point.Y <= bounds.Bottom;
     }
 
     private static bool IsLikelyTitleBandDrag(IntPtr hwnd, NativeMethods.POINT point)
@@ -1433,7 +1718,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _railTransitionGeneration++;
             ClearPeek();
             _railCollapseTimer.Stop();
-            _shelver?.SetThumbnailsVisible(false);
+            SetWindowThumbnailsVisible(false);
             StopThumbnailAnimationRefresh();
         }
         else if (_isRailMode)
@@ -1449,7 +1734,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (!hidden)
         {
             ResetFullShelfVisualState();
-            _shelver?.SetThumbnailsVisible(true);
+            SetWindowThumbnailsVisible(true);
         }
 
         PositionShelfWindow();
@@ -1996,6 +2281,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             (int)Math.Round(bottomRight.Y));
     }
 
+    private static int ScaleDipToPixel(double value, uint dpi) =>
+        (int)Math.Round(value * Math.Max(1, dpi) / 96.0);
+
+    private static double ScalePixelToDip(double value, uint dpi) =>
+        value * 96.0 / Math.Max(1, dpi);
+
     private static Rect GetPreviewThumbnailRect(FrameworkElement element)
     {
         var inset = Math.Min(
@@ -2072,23 +2363,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (shouldShowShelf && !_isRailMode)
         {
-            _shelver?.SetThumbnailsVisible(true);
+            SetWindowThumbnailsVisible(true);
         }
         else
         {
-            _shelver?.SetThumbnailsVisible(false);
+            SetWindowThumbnailsVisible(false);
         }
 
         var targetWidth = GetTargetShelfWidth();
-        var right = SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth;
-        var targetLeft = shouldShowShelf ? right - targetWidth : right + HiddenOffset;
+        var workAreaRightDip = ScalePixelToDip(_monitor.WorkArea.Right, _monitor.DpiX);
+        var workAreaTopDip = ScalePixelToDip(_monitor.WorkArea.Top, _monitor.DpiY);
+        var workAreaHeightDip = ScalePixelToDip(_monitor.WorkArea.Height, _monitor.DpiY);
+        var hiddenLeftDip = ScalePixelToDip(GetHiddenShelfLeft(), _monitor.DpiX);
+        var targetLeft = shouldShowShelf ? workAreaRightDip - targetWidth : hiddenLeftDip;
         var targetOpacity = shouldShowShelf ? 1 : 0;
         var generation = ++_shelfAnimationGeneration;
 
         BeginAnimation(Window.TopProperty, null);
         BeginAnimation(FrameworkElement.HeightProperty, null);
-        Top = SystemParameters.VirtualScreenTop;
-        Height = SystemParameters.VirtualScreenHeight;
+        Top = workAreaTopDip;
+        Height = workAreaHeightDip;
 
         if (!animate || !IsLoaded)
         {
@@ -2098,6 +2392,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Left = targetLeft;
             Width = targetWidth;
             Opacity = targetOpacity;
+            ApplyPhysicalShelfWindowBounds(targetLeft, targetWidth);
 
             return;
         }
@@ -2109,7 +2404,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             if (generation == _shelfAnimationGeneration && (!ShouldShowShelf || _isRailMode))
             {
-                _shelver?.SetThumbnailsVisible(false);
+                SetWindowThumbnailsVisible(false);
             }
 
             QueueThumbnailRefresh();
@@ -2120,6 +2415,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private bool ShouldShowRail => Items.Count > 0 && _isRailMode && !_isShelfHidden;
 
+    private static double GetHiddenShelfLeft()
+    {
+        return MonitorGeometry.GetHiddenShelfLeft(
+            NativeMethods.GetVirtualScreenRect(),
+            HiddenOffset);
+    }
+
     private double GetTargetShelfWidth()
     {
         if (_isRailMode)
@@ -2129,7 +2431,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (_zoomedItem is not null && !_isShelfHidden)
         {
-            return Math.Min(ZoomShelfWidth, Math.Max(ShelfWidth, SystemParameters.VirtualScreenWidth - 24));
+            return Math.Min(ZoomShelfWidth, Math.Max(ShelfWidth, _monitor.WorkArea.Width - 24));
         }
 
         if (_peekedItem is not null && !_isShelfHidden)
@@ -2140,9 +2442,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return ShelfWidth;
     }
 
-    private static double GetZoomPreviewHeight()
+    private void ApplyPhysicalShelfWindowBounds(double leftDip, double widthDip)
     {
-        return Math.Clamp(SystemParameters.VirtualScreenHeight - 170, 360, ZoomPreviewHeight);
+        if (_windowHandle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        NativeMethods.SetWindowPos(
+            _windowHandle,
+            NativeMethods.HWND_TOPMOST,
+            ScaleDipToPixel(leftDip, _monitor.DpiX),
+            _monitor.WorkArea.Top,
+            Math.Max(1, ScaleDipToPixel(widthDip, _monitor.DpiX)),
+            Math.Max(1, _monitor.WorkArea.Height),
+            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+    }
+
+    private double GetZoomPreviewHeight()
+    {
+        return Math.Clamp(_monitor.WorkArea.Height - 170, 360, ZoomPreviewHeight);
     }
 
     private static void SetCardInitialTransform(FrameworkElement card)
@@ -2377,11 +2696,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         PrepareRailEntrance();
         OnPropertyChanged(nameof(FullShelfVisibility));
         OnPropertyChanged(nameof(RailVisibility));
-        _shelver?.SetThumbnailsVisible(false);
+        SetWindowThumbnailsVisible(false);
         SetFullShelfOpacity(1);
         AnimateFullShelfOpacity(0, FullShelfFadeAnimationMs);
         AnimateDouble(this, FrameworkElement.WidthProperty, RailWidth, RailCollapseAnimationMs);
-        var right = SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth;
+        var right = _monitor.WorkArea.Right;
         AnimateDouble(this, Window.LeftProperty, right - RailWidth, RailCollapseAnimationMs, () =>
         {
             if (railGeneration != _railTransitionGeneration)
@@ -2414,9 +2733,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _isRailMode = false;
         OnPropertyChanged(nameof(FullShelfVisibility));
         OnPropertyChanged(nameof(RailVisibility));
-        _shelver?.SetThumbnailsVisible(true);
+        SetWindowThumbnailsVisible(true);
         var targetWidth = GetTargetShelfWidth();
-        var right = SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth;
+        var right = _monitor.WorkArea.Right;
         AnimateDouble(this, FrameworkElement.WidthProperty, targetWidth, RailExpandAnimationMs);
         AnimateDouble(this, Window.LeftProperty, right - targetWidth, RailExpandAnimationMs, () =>
         {

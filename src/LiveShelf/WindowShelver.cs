@@ -19,8 +19,12 @@ internal sealed class WindowShelver
     private const int BadPreviewSamplesBeforeRecovery = 3;
     private const int MaxPreviewRecoveryAttempts = 2;
 
-    private readonly IntPtr _shelfHwnd;
     private readonly ObservableCollection<ShelvedWindow> _items;
+    private readonly Func<IntPtr, NativeMethods.RECT, ShelfTarget?> _resolveShelfTarget;
+    private readonly Action<ShelfTarget> _prepareShelfTarget;
+    private readonly Action<ShelvedWindow, ShelfTarget> _addItemToShelf;
+    private readonly Action<ShelvedWindow> _removeItemFromShelf;
+    private readonly Func<IntPtr, bool> _isShelfWindow;
     private readonly DispatcherTimer _monitorTimer;
     private readonly Dispatcher _dispatcher;
     private readonly ShelfEventBridge _eventBridge;
@@ -30,13 +34,22 @@ internal sealed class WindowShelver
     private readonly MediaSessionService _mediaSessionService;
     private IReadOnlyList<MediaSessionSnapshot> _latestMediaSessions = [];
     private IntPtr _lastForegroundWindow;
-    private bool _thumbnailsVisible = true;
     private bool _isRestoringAll;
 
-    public WindowShelver(IntPtr shelfHwnd, ObservableCollection<ShelvedWindow> items)
+    public WindowShelver(
+        ObservableCollection<ShelvedWindow> items,
+        Func<IntPtr, NativeMethods.RECT, ShelfTarget?> resolveShelfTarget,
+        Action<ShelfTarget> prepareShelfTarget,
+        Action<ShelvedWindow, ShelfTarget> addItemToShelf,
+        Action<ShelvedWindow> removeItemFromShelf,
+        Func<IntPtr, bool> isShelfWindow)
     {
-        _shelfHwnd = shelfHwnd;
         _items = items;
+        _resolveShelfTarget = resolveShelfTarget;
+        _prepareShelfTarget = prepareShelfTarget;
+        _addItemToShelf = addItemToShelf;
+        _removeItemFromShelf = removeItemFromShelf;
+        _isShelfWindow = isShelfWindow;
         _dispatcher = Dispatcher.CurrentDispatcher;
 
         _monitorTimer = new DispatcherTimer
@@ -70,75 +83,205 @@ internal sealed class WindowShelver
 
     public event EventHandler<ShelvedWindow>? AgentCompletionRequested;
 
-    public void ShelfForegroundWindow()
+    public ShelvedWindow ShelfForegroundWindow()
     {
+        var log = new ShelvingAttemptLog();
+        ShelvedWindow? item = null;
+        ShelfTarget? shelfTarget = null;
+        var cardVisible = false;
+        var sourceParked = false;
+        var finalResult = "rollback";
+        var thumbnailHandle = IntPtr.Zero;
+
         var sourceHwnd = NativeMethods.GetForegroundWindow();
+        var foregroundBefore = sourceHwnd;
+        log.Add($"foreground.before={ShelvingAttemptLog.FormatHwnd(foregroundBefore)}");
 
-        if (_items.Any(item => item.SourceHwnd == sourceHwnd))
+        if (_isShelfWindow(sourceHwnd))
         {
-            throw new InvalidOperationException("Window is already shelved");
+            log.Add("foreground is LiveShelf; checking last real foreground");
+            if (_lastForegroundWindow != IntPtr.Zero &&
+                !_isShelfWindow(_lastForegroundWindow) &&
+                NativeMethods.IsNormalAppWindow(_lastForegroundWindow, IntPtr.Zero, out _))
+            {
+                sourceHwnd = _lastForegroundWindow;
+                log.Add($"using last real foreground={ShelvingAttemptLog.FormatHwnd(sourceHwnd)}");
+            }
+            else
+            {
+                log.Add("final=rollback reason=Foreground is OpenShelf; ignoring hotkey");
+                throw new InvalidOperationException("Foreground is OpenShelf; ignoring hotkey");
+            }
         }
-
-        if (!NativeMethods.IsNormalAppWindow(sourceHwnd, _shelfHwnd, out var reason))
-        {
-            throw new InvalidOperationException(reason);
-        }
-
-        var placement = NativeMethods.WINDOWPLACEMENT.Create();
-        if (!NativeMethods.GetWindowPlacement(sourceHwnd, ref placement))
-        {
-            NativeMethods.ThrowLastWin32Error("GetWindowPlacement");
-        }
-
-        if (!NativeMethods.GetWindowRect(sourceHwnd, out var currentRect))
-        {
-            NativeMethods.ThrowLastWin32Error("GetWindowRect");
-        }
-
-        var title = NativeMethods.GetWindowTitle(sourceHwnd);
-        var processName = NativeMethods.GetProcessName(sourceHwnd);
-        var processId = NativeMethods.GetProcessId(sourceHwnd);
-        if (IsBlockedShelvingProcess(processName))
-        {
-            throw new InvalidOperationException($"{FormatProcessDisplayName(processName, processName)} cannot be shelved");
-        }
-
-        var registerResult = NativeMethods.DwmRegisterThumbnail(_shelfHwnd, sourceHwnd, out var thumbnailHandle);
-        NativeMethods.ThrowForHResult("DwmRegisterThumbnail", registerResult);
-
-        var sourcePolicy = SourceWindowPolicyRules.Classify(processName, isMediaCard: false);
-        var item = new ShelvedWindow(
-            sourceHwnd,
-            thumbnailHandle,
-            placement,
-            title,
-            processName,
-            processId,
-            currentRect,
-            sourcePolicy);
-        item.ExePath = NativeMethods.GetProcessExePath(processId);
-        var initialText = ShouldProbeWindowContent(processName, title)
-            ? WindowContentProbe.TryCapture(sourceHwnd)?.Text ?? string.Empty
-            : string.Empty;
-        item.IsAgentLikeSession = LooksLikeAgentSession(processName, title, initialText);
-        item.SuspectedAgent = InferSuspectedAgent(processName, title, item.ExePath, initialText);
-        item.PossibleCwd = InferPossibleCwd(title, initialText);
 
         try
         {
-            ShelvedWindowRegistry.AddOrUpdate(item);
-            item.ParkedBounds = ParkSourceWindow(item);
+            if (_items.Any(existing => existing.SourceHwnd == sourceHwnd))
+            {
+                throw new InvalidOperationException("Window is already shelved");
+            }
+
+            var title = NativeMethods.GetWindowTitle(sourceHwnd);
+            var processName = NativeMethods.GetProcessName(sourceHwnd);
+            var processId = NativeMethods.GetProcessId(sourceHwnd);
+            if (!NativeMethods.GetWindowRect(sourceHwnd, out var currentRect))
+            {
+                NativeMethods.ThrowLastWin32Error("GetWindowRect");
+            }
+
+            log.Add(
+                $"source hwnd={ShelvingAttemptLog.FormatHwnd(sourceHwnd)} title=\"{title}\" pid={processId} process=\"{processName}\" rect={ShelvingAttemptLog.FormatRect(currentRect)}");
+
+            if (!NativeMethods.IsNormalAppWindow(sourceHwnd, IntPtr.Zero, out var reason))
+            {
+                throw new InvalidOperationException(reason);
+            }
+
+            var placement = NativeMethods.WINDOWPLACEMENT.Create();
+            if (!NativeMethods.GetWindowPlacement(sourceHwnd, ref placement))
+            {
+                NativeMethods.ThrowLastWin32Error("GetWindowPlacement");
+            }
+
+            shelfTarget = _resolveShelfTarget(sourceHwnd, currentRect)
+                ?? throw new InvalidOperationException("No display is available for shelving");
+            log.Add(
+                $"monitor handle={ShelvingAttemptLog.FormatHwnd(shelfTarget.Monitor.Handle)} key=\"{shelfTarget.Monitor.Key}\" rcMonitor={ShelvingAttemptLog.FormatRect(shelfTarget.Monitor.Bounds)} rcWork={ShelvingAttemptLog.FormatRect(shelfTarget.Monitor.WorkArea)} dpi={shelfTarget.Monitor.DpiX}x{shelfTarget.Monitor.DpiY}");
+
+            _prepareShelfTarget(shelfTarget);
+            if (!shelfTarget.Window.ForceVisibleForShelving(out var shelfBounds, out var shelfReason))
+            {
+                throw new InvalidOperationException(shelfReason);
+            }
+
+            log.Add(
+                $"shelf hwnd={ShelvingAttemptLog.FormatHwnd(shelfTarget.ShelfHwnd)} bounds={ShelvingAttemptLog.FormatRect(shelfBounds)} visible={NativeMethods.IsWindowVisible(shelfTarget.ShelfHwnd)} opacity={shelfTarget.Window.Opacity:0.###} cards.before={shelfTarget.Items.Count}");
+
+            if (IsBlockedShelvingProcess(processName))
+            {
+                throw new InvalidOperationException($"{FormatProcessDisplayName(processName, processName)} cannot be shelved");
+            }
+
+            var sourcePolicy = SourceWindowPolicyRules.Classify(processName, isMediaCard: false);
+            item = new ShelvedWindow(
+                sourceHwnd,
+                IntPtr.Zero,
+                placement,
+                title,
+                processName,
+                processId,
+                currentRect,
+                sourcePolicy);
+            item.MonitorHandle = shelfTarget.Monitor.Handle;
+            item.OriginalMonitorKey = shelfTarget.Monitor.Key;
+            item.CurrentShelfMonitorKey = shelfTarget.Monitor.Key;
+            item.MonitorBounds = shelfTarget.Monitor.WorkArea;
+            item.ThumbnailShelfHwnd = shelfTarget.ShelfHwnd;
+            item.IsShelvingTransactionPending = true;
+            item.ExePath = NativeMethods.GetProcessExePath(processId);
+            var initialText = ShouldProbeWindowContent(processName, title)
+                ? WindowContentProbe.TryCapture(sourceHwnd)?.Text ?? string.Empty
+                : string.Empty;
+            item.IsAgentLikeSession = LooksLikeAgentSession(processName, title, initialText);
+            item.SuspectedAgent = InferSuspectedAgent(processName, title, item.ExePath, initialText);
+            item.PossibleCwd = InferPossibleCwd(title, initialText);
+
             _items.Add(item);
+            _addItemToShelf(item, shelfTarget);
+            if (item.CurrentShelfMonitorKey != shelfTarget.Monitor.Key ||
+                item.ThumbnailShelfHwnd != shelfTarget.ShelfHwnd)
+            {
+                throw new InvalidOperationException("Card was assigned to the wrong shelf HWND");
+            }
+
+            if (!shelfTarget.Window.ForceRenderShelvingCard(item, out var cardBounds, out var cardReason))
+            {
+                throw new InvalidOperationException(cardReason);
+            }
+
+            cardVisible = true;
+            item.IsShelvingTransactionPending = false;
+            log.Add(
+                $"card id={item.Id} shelf={ShelvingAttemptLog.FormatHwnd(shelfTarget.ShelfHwnd)} bounds={ShelvingAttemptLog.FormatRect(cardBounds)} cards.after={shelfTarget.Items.Count}");
+
+            var registerResult = NativeMethods.DwmRegisterThumbnail(shelfTarget.ShelfHwnd, sourceHwnd, out thumbnailHandle);
+            item.LastDwmRegisterResult = registerResult;
+            log.Add(
+                $"dwm.register destination={ShelvingAttemptLog.FormatHwnd(shelfTarget.ShelfHwnd)} source={ShelvingAttemptLog.FormatHwnd(sourceHwnd)} hr=0x{registerResult:X8} handle={ShelvingAttemptLog.FormatHwnd(thumbnailHandle)}");
+            if (registerResult >= 0 && thumbnailHandle != IntPtr.Zero)
+            {
+                item.ThumbnailHandle = thumbnailHandle;
+                var updateResult = shelfTarget.Window.UpdateThumbnailDestinationForShelving(item);
+                log.Add(
+                    $"dwm.query hr=0x{item.LastDwmQueryResult:X8} dwm.update hr=0x{updateResult:X8} destination={ShelvingAttemptLog.FormatRect(item.LastThumbnailDestination)}");
+                if (updateResult < 0)
+                {
+                    item.DowngradeToStatusOnlyPreview("Live preview unavailable");
+                    finalResult = "placeholder-only";
+                }
+            }
+            else
+            {
+                item.DowngradeToStatusOnlyPreview("Live preview unavailable");
+                finalResult = "placeholder-only";
+            }
+
+            try
+            {
+                item.ParkedBounds = ParkSourceWindow(item);
+                sourceParked = true;
+                ShelvedWindowRegistry.AddOrUpdate(item);
+                log.Add($"source.parked=true bounds={ShelvingAttemptLog.FormatRect(item.ParkedBounds)}");
+            }
+            catch (Exception ex) when (ex is Win32InteropException or InvalidOperationException)
+            {
+                RestoreSourceWindow(item, activate: false);
+                item.DowngradeToStatusOnlyPreview("Shelving incomplete; restore available");
+                item.SetBadge(ShelfBadgeKind.Error, "Source was not parked");
+                finalResult = "placeholder-only";
+                log.Add($"source.parked=false error=\"{ex.Message}\"");
+            }
+
             _agentSessions.TryAutoLinkCard(item);
             _mediaSessionService.RefreshSoon();
             StatusChanged?.Invoke(this, $"Shelved {item.ProcessName}");
             ThumbnailRefreshRequested?.Invoke(this, EventArgs.Empty);
+            if (finalResult == "rollback")
+            {
+                finalResult = item.ThumbnailHandle == IntPtr.Zero || item.IsPreviewStatusOnly
+                    ? "placeholder-only"
+                    : "success";
+            }
+
+            return item;
         }
         catch
         {
-            ShelvedWindowRegistry.Remove(item);
-            NativeMethods.DwmUnregisterThumbnail(thumbnailHandle);
+            if (!cardVisible && item is not null)
+            {
+                _removeItemFromShelf(item);
+                _items.Remove(item);
+                ShelvedWindowRegistry.Remove(item);
+            }
+
+            if (!sourceParked && item is not null)
+            {
+                RestoreSourceWindow(item, activate: false);
+            }
+
+            if (!cardVisible && thumbnailHandle != IntPtr.Zero)
+            {
+                NativeMethods.DwmUnregisterThumbnail(thumbnailHandle);
+            }
+
             throw;
+        }
+        finally
+        {
+            var foregroundAfter = NativeMethods.GetForegroundWindow();
+            log.Add($"foreground.after={ShelvingAttemptLog.FormatHwnd(foregroundAfter)}");
+            log.Add($"final={finalResult} cardVisible={cardVisible} sourceParked={sourceParked}");
+            log.Flush();
         }
     }
 
@@ -155,6 +298,7 @@ internal sealed class WindowShelver
         RestoreSourceWindow(item, activate: true);
         ShelvedWindowRegistry.Remove(item);
 
+        _removeItemFromShelf(item);
         _items.Remove(item);
         StatusChanged?.Invoke(this, "Ready");
     }
@@ -176,6 +320,7 @@ internal sealed class WindowShelver
 
         ShelvedWindowRegistry.Remove(item);
 
+        _removeItemFromShelf(item);
         _items.Remove(item);
         StatusChanged?.Invoke(this, "Ready");
     }
@@ -197,6 +342,7 @@ internal sealed class WindowShelver
 
         ShelvedWindowRegistry.Remove(item);
 
+        _removeItemFromShelf(item);
         _items.Remove(item);
         StatusChanged?.Invoke(this, "Ready");
     }
@@ -232,19 +378,15 @@ internal sealed class WindowShelver
         StatusChanged?.Invoke(this, "Ready");
     }
 
-    public void SetThumbnailsVisible(bool visible)
+    public void SetThumbnailVisible(ShelvedWindow item, bool visible)
     {
-        if (_thumbnailsVisible == visible)
+        if (!_items.Contains(item))
         {
             return;
         }
 
-        _thumbnailsVisible = visible;
-
-        foreach (var item in _items)
-        {
-            UpdateThumbnailVisibility(item, visible);
-        }
+        item.IsThumbnailVisible = visible;
+        UpdateThumbnailVisibility(item, visible);
 
         if (visible)
         {
@@ -257,35 +399,36 @@ internal sealed class WindowShelver
         HideThumbnailPreview(item);
     }
 
-    public void UpdateThumbnailDestination(
+    public int UpdateThumbnailDestination(
         ShelvedWindow item,
         NativeMethods.RECT hostBounds,
         NativeMethods.RECT visibleBounds)
     {
         if (!item.IsSourceAlive)
         {
-            return;
+            return unchecked((int)0x80004005);
         }
 
         if (item.ThumbnailHandle == IntPtr.Zero)
         {
             RecordBadPreviewSample(item, "Live preview unavailable");
-            return;
+            return unchecked((int)0x80004005);
         }
 
         if (item.IsPreviewStatusOnly)
         {
             HideThumbnailPreview(item);
-            return;
+            return unchecked((int)0x80004005);
         }
 
         if (item.IsMediaCard)
         {
             HideThumbnailPreview(item);
-            return;
+            return unchecked((int)0x80004005);
         }
 
         var queryResult = NativeMethods.DwmQueryThumbnailSourceSize(item.ThumbnailHandle, out var sourceSize);
+        item.LastDwmQueryResult = queryResult;
         var hasSourceSize = queryResult >= 0 && DwmThumbnailLayout.HasUsableSourceSize(sourceSize);
         if (hasSourceSize)
         {
@@ -304,7 +447,7 @@ internal sealed class WindowShelver
             if (placement is null)
             {
                 HideThumbnailPreview(item);
-                return;
+                return unchecked((int)0x80004005);
             }
 
             destination = placement.Value.Destination;
@@ -313,7 +456,7 @@ internal sealed class WindowShelver
         else if (!DwmThumbnailLayout.TryIntersect(hostBounds, visibleBounds, out destination))
         {
             HideThumbnailPreview(item);
-            return;
+            return unchecked((int)0x80004005);
         }
 
         var flags =
@@ -332,17 +475,21 @@ internal sealed class WindowShelver
             dwFlags = flags,
             rcDestination = destination,
             rcSource = sourceRect,
-            opacity = _thumbnailsVisible && ShouldShowThumbnail(item) ? (byte)255 : (byte)0,
-            fVisible = _thumbnailsVisible && ShouldShowThumbnail(item),
+            opacity = item.IsThumbnailVisible && ShouldShowThumbnail(item) ? (byte)255 : (byte)0,
+            fVisible = item.IsThumbnailVisible && ShouldShowThumbnail(item),
             fSourceClientAreaOnly = false
         };
 
         var updateResult = NativeMethods.DwmUpdateThumbnailProperties(item.ThumbnailHandle, ref properties);
+        item.LastDwmUpdateResult = updateResult;
+        item.LastThumbnailDestination = destination;
         if (updateResult < 0)
         {
             item.IsSourceAlive = NativeMethods.IsWindow(item.SourceHwnd);
             RecordBadPreviewSample(item, "Live preview refresh failed");
         }
+
+        return updateResult;
     }
 
     private static void UpdateThumbnailVisibility(ShelvedWindow item, bool visible)
@@ -396,14 +543,15 @@ internal sealed class WindowShelver
     {
         return SourceWindowPolicyRules.RequiresSourceSizePreservation(item.SourceWindowPolicy)
             ? ParkLivePreviewSourceWindow(item, allowLivePreviewMoveToOriginal)
-            : ParkNormalSourceWindow(item.SourceHwnd, item.OriginalSourceRect);
+            : ParkNormalSourceWindow(item.SourceHwnd, item.OriginalSourceRect, item.MonitorBounds);
     }
 
     private static NativeMethods.RECT ParkNormalSourceWindow(
         IntPtr sourceHwnd,
-        NativeMethods.RECT currentRect)
+        NativeMethods.RECT currentRect,
+        NativeMethods.RECT monitorBounds)
     {
-        var parkedRect = GetParkedSourceRect(currentRect);
+        var parkedRect = GetParkedSourceRect(currentRect, monitorBounds);
 
         NativeMethods.ShowWindow(sourceHwnd, NativeMethods.SW_RESTORE);
 
@@ -447,7 +595,7 @@ internal sealed class WindowShelver
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE);
 
         var flags = SourceWindowPolicyRules.GetLivePreviewParkFlags();
-        var parkedRect = GetParkedSourceRect(item.OriginalSourceRect);
+        var parkedRect = GetParkedSourceRect(item.OriginalSourceRect, item.MonitorBounds);
         var x = parkedRect.Left;
         var y = parkedRect.Top;
         if (allowMoveToOriginal)
@@ -472,13 +620,14 @@ internal sealed class WindowShelver
         return allowMoveToOriginal ? item.OriginalSourceRect : parkedRect;
     }
 
-    private static NativeMethods.RECT GetParkedSourceRect(NativeMethods.RECT currentRect)
+    private static NativeMethods.RECT GetParkedSourceRect(
+        NativeMethods.RECT currentRect,
+        NativeMethods.RECT monitorBounds)
     {
-        var virtualScreen = NativeMethods.GetVirtualScreenRect();
-        var width = Math.Max(currentRect.Width, 320);
-        var height = Math.Max(currentRect.Height, 240);
-        var parkedX = virtualScreen.Right + 96;
-        var parkedY = virtualScreen.Top + 96;
+        var width = currentRect.Width;
+        var height = currentRect.Height;
+        var parkedX = monitorBounds.Right + 96;
+        var parkedY = monitorBounds.Top + 96;
 
         return new NativeMethods.RECT(
             parkedX,
@@ -498,6 +647,7 @@ internal sealed class WindowShelver
         }
         finally
         {
+            _removeItemFromShelf(item);
             _items.Remove(item);
         }
     }
@@ -511,6 +661,7 @@ internal sealed class WindowShelver
 
         var placement = item.OriginalPlacement;
         placement.Length = NativeMethods.WINDOWPLACEMENT.Create().Length;
+        placement.NormalPosition = GetSafeRestoreRect(item);
 
         RestoreLivePreviewSourceBounds(item, activate);
 
@@ -542,14 +693,30 @@ internal sealed class WindowShelver
             flags |= NativeMethods.SWP_NOACTIVATE;
         }
 
+        var restoreRect = GetSafeRestoreRect(item);
         NativeMethods.SetWindowPos(
             item.SourceHwnd,
             activate ? NativeMethods.HWND_TOP : NativeMethods.HWND_NOTOPMOST,
-            item.OriginalSourceRect.Left,
-            item.OriginalSourceRect.Top,
-            item.OriginalSourceRect.Width,
-            item.OriginalSourceRect.Height,
+            restoreRect.Left,
+            restoreRect.Top,
+            restoreRect.Width,
+            restoreRect.Height,
             flags);
+    }
+
+    private static NativeMethods.RECT GetSafeRestoreRect(ShelvedWindow item)
+    {
+        var monitors = MonitorService.GetMonitors();
+        var monitor = monitors.FirstOrDefault(candidate =>
+            string.Equals(candidate.Key, item.OriginalMonitorKey, StringComparison.Ordinal));
+        if (monitor.Key is null)
+        {
+            monitor = monitors.FirstOrDefault(candidate => candidate.IsPrimary, monitors.FirstOrDefault());
+        }
+
+        return monitor.Key is null
+            ? item.OriginalSourceRect
+            : MonitorService.FitRectIntoWorkArea(item.OriginalSourceRect, monitor.WorkArea);
     }
 
     private static int GetRestoreShowCommand(int originalShowCommand)
@@ -613,7 +780,12 @@ internal sealed class WindowShelver
         _agentSessions.SweepStaleSessions();
         _agentSessions.PruneOldUnlinkedSessions(now);
         _hookHealth.WriteSnapshot(_agentSessions.Sessions, _items);
-        _lastForegroundWindow = foregroundWindow;
+        if (foregroundWindow != IntPtr.Zero &&
+            !_isShelfWindow(foregroundWindow) &&
+            NativeMethods.IsNormalAppWindow(foregroundWindow, IntPtr.Zero, out _))
+        {
+            _lastForegroundWindow = foregroundWindow;
+        }
     }
 
     private void EventBridge_EventReceived(object? sender, ShelfBridgeEvent bridgeEvent)
@@ -2291,7 +2463,7 @@ internal sealed class WindowShelver
         }
 
         var registerResult = NativeMethods.DwmRegisterThumbnail(
-            _shelfHwnd,
+            item.ThumbnailShelfHwnd,
             item.SourceHwnd,
             out var replacementHandle);
         if (registerResult < 0 || replacementHandle == IntPtr.Zero)

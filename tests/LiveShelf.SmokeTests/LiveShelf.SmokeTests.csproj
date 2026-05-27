@@ -15,6 +15,12 @@
              Link="MediaTimelineEstimator.cs" />
     <Compile Include="..\..\src\LiveShelf\NativeMethods.cs"
              Link="NativeMethods.cs" />
+    <Compile Include="..\..\src\LiveShelf\DisplayMonitor.cs"
+             Link="DisplayMonitor.cs" />
+    <Compile Include="..\..\src\LiveShelf\MonitorGeometry.cs"
+             Link="MonitorGeometry.cs" />
+    <Compile Include="..\..\src\LiveShelf\MonitorService.cs"
+             Link="MonitorService.cs" />
     <Compile Include="..\..\src\LiveShelf\Win32InteropException.cs"
              Link="Win32InteropException.cs" />
     <Compile Include="..\..\src\LiveShelf\SourceWindowPolicy.cs"
